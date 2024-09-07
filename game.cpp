@@ -1,6 +1,7 @@
 #include "game.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -24,46 +25,92 @@ void Game::processOrder(const std::string& playerName, const std::string& orderS
         return;
     }
 
-    if (action == "bid" || action == "ask") {
-        char at;
-        double price;
-        iss >> at >> price;
+    if (action == "write_call" || action == "write_put") {
+        int quantity;
+        double strikePrice;
+        int daysToExpire;
+        iss >> quantity >> strikePrice >> daysToExpire;
 
-        if (action == "bid") {
-            if (!player->canBuy(quantity, price)) {
-                std::cout << "Insufficient funds to place this bid.\n";
-                return;
+        OptionType optionType = (action == "write_call") ? OptionType::CALL : OptionType::PUT;
+        std::time_t expirationTime = std::time(nullptr) + daysToExpire * 24 * 3600;
+
+        Option newOption(optionType, strikePrice, quantity, player, expirationTime);
+        orderBook.writeOption(newOption);
+    } else if (action == "buy_option") {
+        int optionIndex;
+        iss >> optionIndex;
+
+        auto availableOptions = orderBook.getAvailableOptions();
+        if (optionIndex >= 0 && optionIndex < availableOptions.size()) {
+            Option& chosenOption = availableOptions[optionIndex];
+            double premium = chosenOption.getPremium(orderBook.getCurrentPrice());
+            if (player->balance >= premium) {
+                player->balance -= premium;
+                chosenOption.writer->balance += premium;
+                chosenOption.holder = player;
+            } else {
+                std::cout << "Insufficient funds to buy this option.\n";
             }
-            orderBook.addOrder(Order(quantity, price, OrderType::BID, player));
         } else {
-            if (!player->canSell(quantity)) {
-                std::cout << "Insufficient stocks to place this ask.\n";
-                return;
-            }
-            orderBook.addOrder(Order(quantity, price, OrderType::ASK, player));
+            std::cout << "Invalid option index.\n";
         }
-    } else if (action == "buy" || action == "sell") {
-        if (action == "buy") {
-            double lowestAskPrice = orderBook.getLowestAskPrice();
-            if (lowestAskPrice == std::numeric_limits<double>::max()) {
-                std::cout << "No asks available for market buy.\n";
-                return;
+    } else if (action == "exercise_option") {
+        int optionIndex;
+        iss >> optionIndex;
+
+        auto availableOptions = orderBook.getAvailableOptions();
+        if (optionIndex >= 0 && optionIndex < availableOptions.size()) {
+            Option& chosenOption = availableOptions[optionIndex];
+            if (chosenOption.holder == player) {
+                orderBook.exerciseOption(chosenOption, player);
+            } else {
+                std::cout << "You don't own this option.\n";
             }
-            if (!player->canBuy(quantity, lowestAskPrice)) {
-                std::cout << "Insufficient funds to place this market buy order.\n";
-                return;
-            }
-            orderBook.addOrder(Order(quantity, OrderType::MARKET_BUY, player));
         } else {
-            if (!player->canSell(quantity)) {
-                std::cout << "Insufficient stocks to place this market sell order.\n";
-                return;
-            }
-            orderBook.addOrder(Order(quantity, OrderType::MARKET_SELL, player));
+            std::cout << "Invalid option index.\n";
         }
     } else {
-        std::cout << "Invalid action. Use 'bid', 'ask', 'buy', or 'sell'.\n";
-        return;
+        if (action == "bid" || action == "ask") {
+            char at;
+            double price;
+            iss >> at >> price;
+
+            if (action == "bid") {
+                if (!player->canBuy(quantity, price)) {
+                    std::cout << "Insufficient funds to place this bid.\n";
+                    return;
+                }
+                orderBook.addOrder(Order(quantity, price, OrderType::BID, player));
+            } else {
+                if (!player->canSell(quantity)) {
+                    std::cout << "Insufficient stocks to place this ask.\n";
+                    return;
+                }
+                orderBook.addOrder(Order(quantity, price, OrderType::ASK, player));
+            }
+        } else if (action == "buy" || action == "sell") {
+            if (action == "buy") {
+                double lowestAskPrice = orderBook.getLowestAskPrice();
+                if (lowestAskPrice == std::numeric_limits<double>::max()) {
+                    std::cout << "No asks available for market buy.\n";
+                    return;
+                }
+                if (!player->canBuy(quantity, lowestAskPrice)) {
+                    std::cout << "Insufficient funds to place this market buy order.\n";
+                    return;
+                }
+                orderBook.addOrder(Order(quantity, OrderType::MARKET_BUY, player));
+            } else {
+                if (!player->canSell(quantity)) {
+                    std::cout << "Insufficient stocks to place this market sell order.\n";
+                    return;
+                }
+                orderBook.addOrder(Order(quantity, OrderType::MARKET_SELL, player));
+            }
+        } else {
+            std::cout << "Invalid action. Use 'bid', 'ask', 'buy', or 'sell'.\n";
+            return;
+        }
     }
 }
 
@@ -77,6 +124,17 @@ std::string Game::getGameState() const {
     }
     oss << "\n"
         << orderBook.getOrderBookDisplay();
+
+    oss << "\nAvailable Options:\n";
+    auto availableOptions = orderBook.getAvailableOptions();
+    for (size_t i = 0; i < availableOptions.size(); ++i) {
+        const auto& option = availableOptions[i];
+        oss << i << ": " << (option.type == OptionType::CALL ? "CALL" : "PUT")
+            << " Strike: " << option.strikePrice
+            << " Qty: " << option.quantity
+            << " Expires: " << std::ctime(&option.expirationTime);
+    }
+
     return oss.str();
 }
 

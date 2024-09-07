@@ -13,6 +13,45 @@ double OrderBook::getHighestBidPrice() const {
     return bids.empty() ? 0 : bids.begin()->first;
 }
 
+void OrderBook::writeOption(Option option) {
+    options.push_back(option);
+}
+
+void OrderBook::exerciseOption(Option& option, Player* player) {
+    double currentPrice = getCurrentPrice();
+    if (option.canExercise(currentPrice)) {
+        if (option.type == OptionType::CALL) {
+            option.writer->balance += option.strikePrice * option.quantity;
+            option.writer->stocksOwned -= option.quantity;
+            player->balance -= option.strikePrice * option.quantity;
+            player->stocksOwned += option.quantity;
+        } else {  // PUT
+            option.writer->balance -= option.strikePrice * option.quantity;
+            option.writer->stocksOwned += option.quantity;
+            player->balance += option.strikePrice * option.quantity;
+            player->stocksOwned -= option.quantity;
+        }
+        option.isExercised = true;
+    }
+}
+
+std::vector<Option> OrderBook::getAvailableOptions() const {
+    std::vector<Option> availableOptions;
+    for (const auto& option : options) {
+        if (!option.isExercised && option.holder == nullptr) {
+            availableOptions.push_back(option);
+        } 
+    }
+    return availableOptions;
+}
+
+double OrderBook::getCurrentPrice() const {
+    if (asks.empty() || bids.empty()) {
+        return 0.0;
+    }
+    return (asks.begin()->first + bids.rbegin()->first) / 2.0;
+}
+
 void OrderBook::addOrder(Order order) {
     if (order.type == OrderType::MARKET_BUY || order.type == OrderType::MARKET_SELL) {
         executeMarketOrder(order);

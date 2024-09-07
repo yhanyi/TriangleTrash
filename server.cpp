@@ -122,18 +122,22 @@ void Server::handleClient(int clientSocket) {
                 std::string input(buffer);
                 input.erase(input.find_last_not_of(" \n\r\t") + 1);
 
-                // if (input == "help") {
-                //     std::string helpMessage =
-                //         "Available commands:\n"
-                //         "  bid <quantity> @<price> - Place a bid order\n"
-                //         "  ask <quantity> @<price> - Place an ask order\n"
-                //         "  buy <quantity> - Place a market buy order\n"
-                //         "  sell <quantity> - Place a market sell order\n"
-                //         "  back - Leave the current room\n"
-                //         "  help - Display this help message\n";
-                //     send(clientSocket, helpMessage.c_str(), helpMessage.length(), 0);
-                //     continue;
-                // }
+                if (input == "help") {
+                    std::string helpMessage =
+                        "Available commands:\n"
+                        "  bid <quantity> @<price> - Place a bid order\n"
+                        "  ask <quantity> @<price> - Place an ask order\n"
+                        "  buy <quantity> - Place a market buy order\n"
+                        "  sell <quantity> - Place a market sell order\n"
+                        "  write_call <quantity> <strike_price> <days_to_expire> - Write a call option\n"
+                        "  write_put <quantity> <strike_price> <days_to_expire> - Write a put option\n"
+                        "  buy_option <option_index> - Buy an available option\n"
+                        "  exercise_option <option_index> - Exercise an option you own\n"
+                        "  back - Leave the current room\n"
+                        "  help - Display this help message\n";
+                    send(clientSocket, helpMessage.c_str(), helpMessage.length(), 0);
+                    continue;
+                }
 
                 if (input == "back") {
                     // Remove client from the room's client list
