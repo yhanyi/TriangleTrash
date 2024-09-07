@@ -8,6 +8,6 @@ class Player {
     double balance;
     int stocksOwned;
     bool canBuy(int quantity, double price) const;
-
     bool canSell(int quantity) const;
+    double getTotalWorth(double currentStockPrice) const;
 };

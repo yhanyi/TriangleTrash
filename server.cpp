@@ -111,8 +111,7 @@ void Server::handleClient(int clientSocket) {
         std::string inputBuffer;
         while (true) {
             std::string gameState = game->getGameState();
-            std::string fullUpdate = "\033[2J\033[H" + gameState + "\n" + inputBuffer +
-                                     "\nEnter order (e.g., 'bid 5 @500', 'ask 3 @600', 'buy 5', or 'sell 3') or 'back' to change room: ";
+            std::string fullUpdate = "\033[2J\033[H" + gameState + "\nCOMMAND: ";
             send(clientSocket, fullUpdate.c_str(), fullUpdate.length(), 0);
 
             char buffer[1024];
@@ -122,6 +121,19 @@ void Server::handleClient(int clientSocket) {
                 buffer[bytesRead] = '\0';
                 std::string input(buffer);
                 input.erase(input.find_last_not_of(" \n\r\t") + 1);
+
+                // if (input == "help") {
+                //     std::string helpMessage =
+                //         "Available commands:\n"
+                //         "  bid <quantity> @<price> - Place a bid order\n"
+                //         "  ask <quantity> @<price> - Place an ask order\n"
+                //         "  buy <quantity> - Place a market buy order\n"
+                //         "  sell <quantity> - Place a market sell order\n"
+                //         "  back - Leave the current room\n"
+                //         "  help - Display this help message\n";
+                //     send(clientSocket, helpMessage.c_str(), helpMessage.length(), 0);
+                //     continue;
+                // }
 
                 if (input == "back") {
                     // Remove client from the room's client list

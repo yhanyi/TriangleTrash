@@ -10,3 +10,7 @@ bool Player::canBuy(int quantity, double price) const {
 bool Player::canSell(int quantity) const {
     return stocksOwned >= quantity;
 }
+
+double Player::getTotalWorth(double currentStockPrice) const {
+    return balance + (stocksOwned * currentStockPrice);
+}
