@@ -14,5 +14,6 @@ class Server {
    private:
     int port;
     std::map<std::string, Game> rooms;
+    std::map<std::string, std::vector<int>> roomClients;
     void handleClient(int clientSocket);
 };

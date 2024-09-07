@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "order.hpp"
+#include "player.hpp"
 
 class OrderBook {
    public:

@@ -13,7 +13,45 @@ void OrderBook::addOrder(const Order& order) {
 }
 
 void OrderBook::matchOrders() {
-    // TODO: Re-implement order matching logic.
+    while (!bids.empty() && !asks.empty()) {
+        auto highestBid = bids.rbegin();
+        auto lowestAsk = asks.begin();
+
+        if (highestBid->first >= lowestAsk->first) {
+            // Match found
+            auto& bidOrder = highestBid->second.front();
+            auto& askOrder = lowestAsk->second.front();
+
+            int matchedQuantity = std::min(bidOrder.quantity, askOrder.quantity);
+            double matchPrice = lowestAsk->first;
+
+            // Update player balances and stocks
+            bidOrder.player->balance -= matchedQuantity * matchPrice;
+            bidOrder.player->stocksOwned += matchedQuantity;
+            askOrder.player->balance += matchedQuantity * matchPrice;
+            askOrder.player->stocksOwned -= matchedQuantity;
+
+            // Update order quantities
+            bidOrder.quantity -= matchedQuantity;
+            askOrder.quantity -= matchedQuantity;
+
+            // Remove fulfilled orders
+            if (bidOrder.quantity == 0) {
+                highestBid->second.erase(highestBid->second.begin());
+                if (highestBid->second.empty()) {
+                    bids.erase(std::next(highestBid).base());
+                }
+            }
+            if (askOrder.quantity == 0) {
+                lowestAsk->second.erase(lowestAsk->second.begin());
+                if (lowestAsk->second.empty()) {
+                    asks.erase(lowestAsk);
+                }
+            }
+        } else {
+            break;
+        }
+    }
 }
 
 std::string OrderBook::getOrderBookDisplay() const {

@@ -1,16 +1,15 @@
 #include "server.hpp"
 
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <thread>
-
-#include "game.hpp"
-#include "player.hpp"
-#include "server.hpp"
+#include <vector>
 
 Server::Server(int port) : port(port) {}
 
@@ -37,6 +36,8 @@ void Server::start() {
         close(serverSocket);
         return;
     }
+
+    std::cout << "Server listening on port " << port << std::endl;
 
     while (true) {
         sockaddr_in clientAddr;
@@ -66,9 +67,11 @@ void Server::handleClient(int clientSocket) {
     std::string currentRoom;
     std::string playerName;
 
+    // Send welcome message
     const char* welcomeMsg = "Welcome to TriangleTrash! Enter your name: ";
     send(clientSocket, welcomeMsg, strlen(welcomeMsg), 0);
 
+    // Receive player name
     int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
     if (bytesRead > 0) {
         buffer[bytesRead] = '\0';
@@ -96,25 +99,47 @@ void Server::handleClient(int clientSocket) {
         }
 
         currentRoom = input;
-        game->addPlayer(new Player(playerName, 10000));
+        game->addPlayer(new Player(playerName, 10000));  // Add player with initial balance
 
+        // Add client to the room's client list
+        roomClients[currentRoom].push_back(clientSocket);
+
+        // Set socket to non-blocking mode
+        int flags = fcntl(clientSocket, F_GETFL, 0);
+        fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
+
+        std::string inputBuffer;
         while (true) {
             std::string gameState = game->getGameState();
-            send(clientSocket, gameState.c_str(), gameState.length(), 0);
+            std::string fullUpdate = "\033[2J\033[H" + gameState + "\n" + inputBuffer + "\nEnter order (e.g., 'bid 5 @500' or 'ask 3 @600') or 'back' to change room: ";
+            send(clientSocket, fullUpdate.c_str(), fullUpdate.length(), 0);
 
-            const char* orderPrompt = "\nEnter order (e.g., 'bid 5 @500' or 'ask 3 @600') or 'back' to change room: ";
-            send(clientSocket, orderPrompt, strlen(orderPrompt), 0);
+            char buffer[1024];
+            int bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
 
-            bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
-            if (bytesRead <= 0) break;
+            if (bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                std::string input(buffer);
+                input.erase(input.find_last_not_of(" \n\r\t") + 1);
 
-            buffer[bytesRead] = '\0';
-            input = buffer;
-            input.erase(input.find_last_not_of(" \n\r\t") + 1);
+                if (input == "back") {
+                    // Remove client from the room's client list
+                    auto& clients = roomClients[currentRoom];
+                    clients.erase(std::remove(clients.begin(), clients.end(), clientSocket), clients.end());
+                    break;
+                }
 
-            if (input == "back") break;
+                game->processOrder(playerName, input);
+                inputBuffer.clear();
+            } else if (bytesRead == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                // No data available, continue with the loop
+            } else {
+                // Error or disconnect
+                break;
+            }
 
-            game->processOrder(playerName, input);
+            // Short sleep to prevent CPU overuse
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
