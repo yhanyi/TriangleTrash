@@ -111,7 +111,8 @@ void Server::handleClient(int clientSocket) {
         std::string inputBuffer;
         while (true) {
             std::string gameState = game->getGameState();
-            std::string fullUpdate = "\033[2J\033[H" + gameState + "\n" + inputBuffer + "\nEnter order (e.g., 'bid 5 @500' or 'ask 3 @600') or 'back' to change room: ";
+            std::string fullUpdate = "\033[2J\033[H" + gameState + "\n" + inputBuffer +
+                                     "\nEnter order (e.g., 'bid 5 @500', 'ask 3 @600', 'buy 5', or 'sell 3') or 'back' to change room: ";
             send(clientSocket, fullUpdate.c_str(), fullUpdate.length(), 0);
 
             char buffer[1024];

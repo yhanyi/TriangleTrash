@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 Game::Game(const std::string& roomCode) : roomCode(roomCode) {}
@@ -15,10 +16,7 @@ void Game::processOrder(const std::string& playerName, const std::string& orderS
     std::istringstream iss(orderStr);
     std::string action;
     int quantity;
-    char at;
-    double price;
-
-    iss >> action >> quantity >> at >> price;
+    iss >> action >> quantity;
 
     Player* player = findPlayer(playerName);
     if (!player) {
@@ -26,26 +24,47 @@ void Game::processOrder(const std::string& playerName, const std::string& orderS
         return;
     }
 
-    if (action == "bid") {
-        if (!player->canBuy(quantity, price)) {
-            std::cout << "Insufficient funds to place this bid.\n";
-            return;
+    if (action == "bid" || action == "ask") {
+        char at;
+        double price;
+        iss >> at >> price;
+
+        if (action == "bid") {
+            if (!player->canBuy(quantity, price)) {
+                std::cout << "Insufficient funds to place this bid.\n";
+                return;
+            }
+            orderBook.addOrder(Order(quantity, price, OrderType::BID, player));
+        } else {
+            if (!player->canSell(quantity)) {
+                std::cout << "Insufficient stocks to place this ask.\n";
+                return;
+            }
+            orderBook.addOrder(Order(quantity, price, OrderType::ASK, player));
         }
-    } else if (action == "ask") {
-        if (!player->canSell(quantity)) {
-            std::cout << "Insufficient stocks to place this ask.\n";
-            return;
+    } else if (action == "buy" || action == "sell") {
+        if (action == "buy") {
+            double lowestAskPrice = orderBook.getLowestAskPrice();
+            if (lowestAskPrice == std::numeric_limits<double>::max()) {
+                std::cout << "No asks available for market buy.\n";
+                return;
+            }
+            if (!player->canBuy(quantity, lowestAskPrice)) {
+                std::cout << "Insufficient funds to place this market buy order.\n";
+                return;
+            }
+            orderBook.addOrder(Order(quantity, OrderType::MARKET_BUY, player));
+        } else {
+            if (!player->canSell(quantity)) {
+                std::cout << "Insufficient stocks to place this market sell order.\n";
+                return;
+            }
+            orderBook.addOrder(Order(quantity, OrderType::MARKET_SELL, player));
         }
     } else {
-        std::cout << "Invalid action. Use 'bid' or 'ask'.\n";
+        std::cout << "Invalid action. Use 'bid', 'ask', 'buy', or 'sell'.\n";
         return;
     }
-
-    OrderType orderType = (action == "bid") ? OrderType::BID : OrderType::ASK;
-    Order order(quantity, price, orderType, player);
-
-    orderBook.addOrder(order);
-    orderBook.matchOrders();
 }
 
 std::string Game::getGameState() const {

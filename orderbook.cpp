@@ -2,14 +2,78 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
-void OrderBook::addOrder(const Order& order) {
-    if (order.type == OrderType::BID) {
-        bids[order.price].push_back(order);
-    } else {
-        asks[order.price].push_back(order);
+double OrderBook::getLowestAskPrice() const {
+    return asks.empty() ? std::numeric_limits<double>::max() : asks.begin()->first;
+}
+
+double OrderBook::getHighestBidPrice() const {
+    return bids.empty() ? 0 : bids.begin()->first;
+}
+
+void OrderBook::addOrder(Order order) {
+    if (order.type == OrderType::MARKET_BUY || order.type == OrderType::MARKET_SELL) {
+        executeMarketOrder(order);
+    } else if (order.type == OrderType::BID) {
+        bids[order.price].push_back(std::move(order));
+    } else if (order.type == OrderType::ASK) {
+        asks[order.price].push_back(std::move(order));
     }
+    matchOrders();
+}
+
+void OrderBook::executeMarketOrder(Order& order) {
+    if (order.type == OrderType::MARKET_BUY) {
+        for (auto it = asks.begin(); it != asks.end() && order.quantity > 0;) {
+            auto& askOrders = it->second;
+            for (auto orderIt = askOrders.begin(); orderIt != askOrders.end() && order.quantity > 0;) {
+                int matchedQuantity = std::min(order.quantity, orderIt->quantity);
+                executeTransaction(order.player, orderIt->player, matchedQuantity, it->first);
+                order.quantity -= matchedQuantity;
+                orderIt->quantity -= matchedQuantity;
+                if (orderIt->quantity == 0) {
+                    orderIt = askOrders.erase(orderIt);
+                } else {
+                    ++orderIt;
+                }
+            }
+            if (askOrders.empty()) {
+                it = asks.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    } else if (order.type == OrderType::MARKET_SELL) {
+        for (auto it = bids.rbegin(); it != bids.rend() && order.quantity > 0;) {
+            auto& bidOrders = it->second;
+            for (auto orderIt = bidOrders.begin(); orderIt != bidOrders.end() && order.quantity > 0;) {
+                int matchedQuantity = std::min(order.quantity, orderIt->quantity);
+                executeTransaction(orderIt->player, order.player, matchedQuantity, it->first);
+                order.quantity -= matchedQuantity;
+                orderIt->quantity -= matchedQuantity;
+                if (orderIt->quantity == 0) {
+                    orderIt = bidOrders.erase(orderIt);
+                } else {
+                    ++orderIt;
+                }
+            }
+            if (bidOrders.empty()) {
+                it = std::map<double, std::vector<Order>, std::greater<double>>::reverse_iterator(bids.erase((++it).base()));
+            } else {
+                ++it;
+            }
+        }
+    }
+}
+
+void OrderBook::executeTransaction(Player* buyer, Player* seller, int quantity, double price) {
+    double totalPrice = quantity * price;
+    buyer->balance -= totalPrice;
+    buyer->stocksOwned += quantity;
+    seller->balance += totalPrice;
+    seller->stocksOwned -= quantity;
 }
 
 void OrderBook::matchOrders() {
