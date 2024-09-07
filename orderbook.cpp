@@ -68,9 +68,8 @@ std::string OrderBook::getOrderBookDisplay() const {
         oss << "\t\033[1;31m$" << std::setw(6) << std::fixed << std::setprecision(2)
             << it->first << std::setw(5) << size_sum << "\033[0m ";
 
-        for (int i = 0; i < size_sum / 10; i++) {
-            oss << "█";
-        }
+        // int barLength = std::min(size_sum / 10, 50);  // Cap bar length at 50 characters
+        // oss << std::string(barLength, '█');
         oss << "\n";
     }
 
@@ -92,9 +91,8 @@ std::string OrderBook::getOrderBookDisplay() const {
         oss << "\t\033[1;32m$" << std::setw(6) << std::fixed << std::setprecision(2)
             << it->first << std::setw(5) << size_sum << "\033[0m ";
 
-        for (int i = 0; i < size_sum / 10; i++) {
-            oss << "█";
-        }
+        // int barLength = std::min(size_sum / 10, 50);  // Cap bar length at 50 characters
+        // oss << std::string(barLength, '█');
         oss << "\n";
     }
 

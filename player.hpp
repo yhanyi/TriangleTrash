@@ -7,4 +7,7 @@ class Player {
     std::string name;
     double balance;
     int stocksOwned;
+    bool canBuy(int quantity, double price) const;
+
+    bool canSell(int quantity) const;
 };

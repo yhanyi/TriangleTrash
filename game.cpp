@@ -1,9 +1,9 @@
 #include "game.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <iomanip>
 
 Game::Game(const std::string& roomCode) : roomCode(roomCode) {}
 
@@ -23,6 +23,21 @@ void Game::processOrder(const std::string& playerName, const std::string& orderS
     Player* player = findPlayer(playerName);
     if (!player) {
         std::cout << "Player not found.\n";
+        return;
+    }
+
+    if (action == "bid") {
+        if (!player->canBuy(quantity, price)) {
+            std::cout << "Insufficient funds to place this bid.\n";
+            return;
+        }
+    } else if (action == "ask") {
+        if (!player->canSell(quantity)) {
+            std::cout << "Insufficient stocks to place this ask.\n";
+            return;
+        }
+    } else {
+        std::cout << "Invalid action. Use 'bid' or 'ask'.\n";
         return;
     }
 
