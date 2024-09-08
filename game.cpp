@@ -7,7 +7,22 @@
 #include <limits>
 #include <sstream>
 
-Game::Game(const std::string &roomCode) : roomCode(roomCode) {}
+Game::Game(const std::string &roomCode, int numBots, bool botsEnabled)
+    : roomCode(roomCode), botManager(numBots, 10000), botsEnabled(botsEnabled) {
+
+  if (botsEnabled) {
+    for (auto &bot : botManager.getBots()) {
+      bot.stocksOwned = 0;
+      players.push_back(&bot);
+    }
+  }
+}
+
+void Game::updateBots() {
+  if (botsEnabled) {
+    botManager.updateBots(orderBook);
+  }
+}
 
 void Game::addPlayer(Player *player) { players.push_back(player); }
 
@@ -133,7 +148,8 @@ std::string Game::getGameState() const {
 
   for (const auto &player : sortedPlayers) {
     double profit = player->getProfit();
-    oss << player->name << " - Balance: $" << std::fixed << std::setprecision(2)
+    oss << (dynamic_cast<Bot *>(player) != nullptr ? "[BOT] " : "")
+        << player->name << " - Balance: $" << std::fixed << std::setprecision(2)
         << player->balance << ", Stocks: " << player->stocksOwned
         << ", Profit: $" << std::fixed << std::setprecision(2) << profit
         << (profit > 0 ? " ▲" : (profit < 0 ? " ▼" : " =")) << "\n";

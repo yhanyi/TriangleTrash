@@ -4,6 +4,7 @@
 class Player {
 public:
   Player(const std::string &name, double initialBalance);
+  virtual ~Player() = default;
   std::string name;
   double balance;
   double initialBalance;

@@ -7,9 +7,9 @@ CXXFLAGS += -arch arm64
 LDFLAGS += -arch arm64
 
 TARGET = triangletrash
-SRCS = main.cpp server.cpp orderbook.cpp game.cpp player.cpp order.cpp option.cpp
+SRCS = main.cpp server.cpp orderbook.cpp game.cpp player.cpp order.cpp option.cpp bot.cpp botmanager.cpp
 OBJS = $(SRCS:.cpp=.o)
-DEPS = game.hpp player.hpp order.hpp orderbook.hpp server.hpp
+DEPS = game.hpp player.hpp order.hpp orderbook.hpp server.hpp bot.hpp botmanager.hpp option.hpp
 
 all: $(TARGET)
 
