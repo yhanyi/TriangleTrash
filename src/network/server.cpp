@@ -1,5 +1,6 @@
 #include "../../include/network/server.hpp"
 #include "../../include/orderbook/orderbook.hpp"
+#include "../../include/session/session.hpp"
 #include <atomic>
 #include <cstring>
 #include <iostream>
@@ -10,59 +11,82 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 namespace network {
 
 class NetworkServer::Impl {
 public:
-  Impl(uint16_t port, orderbook::OrderBook &orderbook)
-      : _orderbook(orderbook), _port(port), _running(false) {}
+  Impl(uint16_t port) : _port(port), _running(false) {
+    // Create default session
+    createSession("default");
+  }
 
   ~Impl() { stop(); }
 
   void start();
   void stop();
+  void createSession(const std::string &session_id);
+  session::Session *getSession(const std::string &session_id);
 
 private:
   void acceptLoop();
   void handleClient(int clientSocket);
-  orderbook::Order parseOrderMessage(const std::string &message);
+  void handleJoinMessage(int clientSocket, const nlohmann::json &j);
+  void handleOrderMessage(int clientSocket, const nlohmann::json &j);
   void sendResponse(int clientSocket, const std::string &response);
 
-  orderbook::OrderBook &_orderbook;
   int _serverSocket;
   uint16_t _port;
   std::atomic<bool> _running;
   std::thread _acceptThread;
   std::vector<std::thread> _clientThreads;
   std::mutex _threads_mutex;
+
+  // Session management
+  std::unordered_map<std::string, std::unique_ptr<session::Session>> _sessions;
+  std::mutex _sessions_mutex;
 };
 
-/**
- * Protocol message format:
- * {
- *   "type": "new_order",
- *   "side": "buy"|"sell",
- *   "price": 100.0,
- *   "quantity": 10,
- *   "order_id": 12345
- * }
- */
-
-NetworkServer::NetworkServer(uint16_t port, orderbook::OrderBook &orderbook)
-    : _pimpl(new Impl(port, orderbook)) {}
+NetworkServer::NetworkServer(uint16_t port) : _pimpl(new Impl(port)) {}
 
 NetworkServer::~NetworkServer() { delete _pimpl; }
 
 void NetworkServer::start() { _pimpl->start(); }
 void NetworkServer::stop() { _pimpl->stop(); }
+void NetworkServer::createSession(const std::string &session_id) {
+  _pimpl->createSession(session_id);
+}
+session::Session *NetworkServer::getSession(const std::string &session_id) {
+  return _pimpl->getSession(session_id);
+}
+
+void NetworkServer::Impl::createSession(const std::string &session_id) {
+  std::lock_guard<std::mutex> lock(_sessions_mutex);
+  if (_sessions.find(session_id) == _sessions.end()) {
+    _sessions[session_id] = std::make_unique<session::Session>(session_id);
+    // Create a default trading symbol
+    _sessions[session_id]->createOrderBook("STOCK");
+  }
+}
+
+session::Session *
+NetworkServer::Impl::getSession(const std::string &session_id) {
+  std::lock_guard<std::mutex> lock(_sessions_mutex);
+  auto it = _sessions.find(session_id);
+  if (it != _sessions.end()) {
+    return it->second.get();
+  }
+  return nullptr;
+}
 
 void NetworkServer::Impl::start() {
   if (_running) {
     std::cout << "Server is already running\n";
     return;
   }
+
   _running = true;
 
   // Create TCP socket
@@ -86,25 +110,18 @@ void NetworkServer::Impl::start() {
 
   if (bind(_serverSocket, (struct sockaddr *)&serverAddress,
            sizeof(serverAddress)) < 0) {
-    std::cerr << "Failed to bind socket: " << strerror(errno) << std::endl;
-    close(_serverSocket);
     throw std::runtime_error("Failed to bind socket");
   }
 
   // Start listening
   if (listen(_serverSocket, SOMAXCONN) < 0) {
-    std::cerr << "Failed to listen on socket: " << strerror(errno) << std::endl;
-    close(_serverSocket);
     throw std::runtime_error("Failed to listen on socket");
   }
-
-  _running = true;
 
   // Start accept thread
   _acceptThread = std::thread(&NetworkServer::Impl::acceptLoop, this);
 
-  std::cout << "Server successfully started and listening on port " << _port
-            << std::endl;
+  std::cout << "Server started on port " << _port << std::endl;
 }
 
 void NetworkServer::Impl::stop() {
@@ -112,18 +129,15 @@ void NetworkServer::Impl::stop() {
     return;
   _running = false;
 
-  // Close the server socket to interrupt accept()
   if (_serverSocket != -1) {
     close(_serverSocket);
     _serverSocket = -1;
   }
 
-  // Wait for accept thread to finish
   if (_acceptThread.joinable()) {
     _acceptThread.join();
   }
 
-  // Clean up client threads
   {
     std::lock_guard<std::mutex> lock(_threads_mutex);
     for (auto &thread : _clientThreads) {
@@ -133,8 +147,6 @@ void NetworkServer::Impl::stop() {
     }
     _clientThreads.clear();
   }
-
-  std::cout << "Server stopped\n";
 }
 
 void NetworkServer::Impl::acceptLoop() {
@@ -149,7 +161,6 @@ void NetworkServer::Impl::acceptLoop() {
 
     if (clientSocket < 0) {
       if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
-        // These errors are expected during shutdown or when non-blocking
         continue;
       }
       std::cerr << "Failed to accept connection: " << strerror(errno)
@@ -175,32 +186,26 @@ void NetworkServer::Impl::handleClient(int clientSocket) {
       std::memset(buffer.data(), 0, buffer.size());
       ssize_t bytesRead = read(clientSocket, buffer.data(), buffer.size() - 1);
 
-      if (bytesRead < 0) {
-        if (errno == EINTR)
-          continue;
-        std::cerr << "Read error: " << strerror(errno) << std::endl;
-        break;
-      }
-
-      if (bytesRead == 0) {
-        std::cout << "Client disconnected\n";
+      if (bytesRead <= 0) {
+        if (bytesRead == 0) {
+          std::cout << "Client disconnected\n";
+        }
         break;
       }
 
       std::string message(buffer.data(), bytesRead);
       try {
-        // Parse and process the order
-        orderbook::Order order = parseOrderMessage(message);
-        bool success = _orderbook.addOrder(order);
+        nlohmann::json j = nlohmann::json::parse(message);
 
-        // Send response
-        std::string response =
-            success
-                ? "{\"status\":\"success\",\"order_id\":" +
-                      std::to_string(order.getId()) + "}"
-                : "{\"status\":\"error\",\"message\":\"Failed to add order\"}";
-
-        sendResponse(clientSocket, response);
+        // Handle different message types
+        std::string type = j["type"];
+        if (type == "join") {
+          handleJoinMessage(clientSocket, j);
+        } else if (type == "new_order") {
+          handleOrderMessage(clientSocket, j);
+        } else {
+          throw std::runtime_error("Unknown message type");
+        }
 
       } catch (const std::exception &e) {
         std::string errorResponse = "{\"status\":\"error\",\"message\":\"" +
@@ -215,25 +220,91 @@ void NetworkServer::Impl::handleClient(int clientSocket) {
   close(clientSocket);
 }
 
-orderbook::Order
-NetworkServer::Impl::parseOrderMessage(const std::string &message) {
-  try {
-    nlohmann::json j = nlohmann::json::parse(message);
+void NetworkServer::Impl::handleJoinMessage(int clientSocket,
+                                            const nlohmann::json &j) {
+  std::string username = j["username"];
+  std::string session_id = j.value("session_id", "default");
 
-    if (j["type"] != "new_order") {
-      throw std::runtime_error("Invalid message type");
+  auto *session = getSession(session_id);
+  if (!session) {
+    throw std::runtime_error("Session not found");
+  }
+
+  if (session->addUser(username, clientSocket)) {
+    nlohmann::json response = {{"status", "success"},
+                               {"message", "Joined session"},
+                               {"session_id", session_id},
+                               {"username", username}};
+    sendResponse(clientSocket, response.dump());
+  } else {
+    throw std::runtime_error("Username already taken");
+  }
+}
+
+void NetworkServer::Impl::handleOrderMessage(int clientSocket,
+                                             const nlohmann::json &j) {
+  std::string session_id = j.value("session_id", "default");
+  auto *session = getSession(session_id);
+  if (!session) {
+    throw std::runtime_error("Session not found");
+  }
+
+  auto user = session->getUserBySocket(clientSocket);
+  if (!user) {
+    throw std::runtime_error("User not found");
+  }
+
+  std::string symbol = j.value("symbol", "STOCK");
+  auto *orderbook = session->getOrderBook(symbol);
+  if (!orderbook) {
+    throw std::runtime_error("Symbol not found");
+  }
+
+  orderbook::Side side =
+      j["side"] == "buy" ? orderbook::Side::BUY : orderbook::Side::SELL;
+  uint64_t order_id = j["order_id"];
+  double price = j["price"];
+  uint32_t quantity = j["quantity"];
+
+  // Check if user can afford the trade
+  if (side == orderbook::Side::BUY && !user->canAffordTrade(price, quantity)) {
+    throw std::runtime_error("Insufficient funds");
+  }
+
+  // For sell orders, check if user has enough position
+  if (side == orderbook::Side::SELL && user->getPosition(symbol) < quantity) {
+    throw std::runtime_error("Insufficient position");
+  }
+
+  orderbook::Order order(order_id, side, price, quantity);
+
+  // Try to match the order
+  auto match_result = orderbook->matchOrder(order);
+
+  if (match_result) {
+    // Update user balances and positions
+    if (side == orderbook::Side::BUY) {
+      user->updateBalance(-price * quantity);
+      user->addPosition(symbol, quantity);
+    } else {
+      user->updateBalance(price * quantity);
+      user->removePosition(symbol, quantity);
     }
 
-    orderbook::Side side =
-        j["side"] == "buy" ? orderbook::Side::BUY : orderbook::Side::SELL;
-    uint64_t orderId = j["order_id"];
-    double price = j["price"];
-    uint32_t quantity = j["quantity"];
-
-    return orderbook::Order(orderId, side, price, quantity);
-
-  } catch (const std::exception &e) {
-    throw std::runtime_error("Failed to parse order: " + std::string(e.what()));
+    nlohmann::json response = {{"status", "success"},
+                               {"message", "Order matched"},
+                               {"order_id", order_id}};
+    sendResponse(clientSocket, response.dump());
+  } else {
+    // Add to orderbook if no match
+    if (orderbook->addOrder(order)) {
+      nlohmann::json response = {{"status", "success"},
+                                 {"message", "Order added to book"},
+                                 {"order_id", order_id}};
+      sendResponse(clientSocket, response.dump());
+    } else {
+      throw std::runtime_error("Failed to add order");
+    }
   }
 }
 
