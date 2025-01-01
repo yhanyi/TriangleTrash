@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        brew install cmake
+        brew install ninja
+        brew install googletest
+        brew install google-benchmark
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config Release
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C Release --output-on-failure --verbose
+
+  sanitize:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        brew install cmake
+        brew install ninja
+        brew install googletest
+        brew install google-benchmark
+
+    - name: Configure CMake with Sanitisers
+      run: |
+        cmake -B ${{github.workspace}}/build-sanitize \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+    - name: Build with Sanitisers
+      run: cmake --build ${{github.workspace}}/build-sanitize
+
+    - name: Test with Sanitisers
+      working-directory: ${{github.workspace}}/build-sanitize
+      run: ctest --output-on-failure --verbose
