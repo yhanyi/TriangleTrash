@@ -20,27 +20,41 @@ protected:
   void TearDown() override {
     if (server) {
       server->stop();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 
-  // Helper function to create a client socket
-  int createClientSocket() {
+  // Helper function to create a client socket with timeout
+  int createClientSocket(int timeout_ms = 1000) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
       throw std::runtime_error("Failed to create client socket");
     }
+
+    // Set socket timeout
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(test_port);
     inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr);
 
-    if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-      close(sock);
-      throw std::runtime_error("Failed to connect to server");
+    // Wait for server to be ready
+    int retries = 10;
+    while (retries-- > 0) {
+      if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) ==
+          0) {
+        return sock;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    return sock;
+    close(sock);
+    throw std::runtime_error("Failed to connect to server");
   }
 
   // Helper to send message and get response
@@ -196,10 +210,20 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
 
   constexpr int NUM_CLIENTS = 5;
   std::vector<int> sockets;
+  sockets.reserve(NUM_CLIENTS);
 
   for (int i = 0; i < NUM_CLIENTS; ++i) {
-    sockets.push_back(createClientSocket());
-    EXPECT_TRUE(joinSession(sockets[i], "trader" + std::to_string(i)));
+    try {
+      sockets.push_back(createClientSocket());
+      EXPECT_TRUE(joinSession(sockets.back(), "trader" + std::to_string(i)));
+    } catch (const std::exception &e) {
+      ADD_FAILURE() << "Failed to create client " << i << ": " << e.what();
+      // Clean up already created sockets
+      for (int sock : sockets) {
+        close(sock);
+      }
+      throw;
+    }
   }
 
   json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
