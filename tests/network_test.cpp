@@ -1,6 +1,7 @@
 #include "../include/network/server.hpp"
 #include "../include/session/session.hpp"
 #include <arpa/inet.h>
+#include <future>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
@@ -20,41 +21,27 @@ protected:
   void TearDown() override {
     if (server) {
       server->stop();
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 
   // Helper function to create a client socket with timeout
-  int createClientSocket(int timeout_ms = 1000) {
+  int createClientSocket() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
       throw std::runtime_error("Failed to create client socket");
     }
-
-    // Set socket timeout
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(test_port);
     inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr);
 
-    // Wait for server to be ready
-    int retries = 10;
-    while (retries-- > 0) {
-      if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) ==
-          0) {
-        return sock;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+      close(sock);
+      throw std::runtime_error("Failed to connect");
     }
 
-    close(sock);
-    throw std::runtime_error("Failed to connect to server");
+    return sock;
   }
 
   // Helper to send message and get response
@@ -206,38 +193,47 @@ TEST_F(NetworkTest, HandlesInsufficientFunds) {
 // Test multiple clients
 TEST_F(NetworkTest, HandlesMultipleClients) {
   server->start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   constexpr int NUM_CLIENTS = 5;
+  std::vector<std::future<bool>> client_futures;
   std::vector<int> sockets;
   sockets.reserve(NUM_CLIENTS);
 
-  for (int i = 0; i < NUM_CLIENTS; ++i) {
+  // Create clients concurrently
+  auto handle_client = [this](int client_id) -> bool {
     try {
-      sockets.push_back(createClientSocket());
-      EXPECT_TRUE(joinSession(sockets.back(), "trader" + std::to_string(i)));
-    } catch (const std::exception &e) {
-      ADD_FAILURE() << "Failed to create client " << i << ": " << e.what();
-      // Clean up already created sockets
-      for (int sock : sockets) {
+      int sock = createClientSocket();
+
+      // Join session
+      if (!joinSession(sock, "trader" + std::to_string(client_id))) {
         close(sock);
+        return false;
       }
-      throw;
+
+      // Place order
+      json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
+                       {"side", "buy"},       {"price", 100.0},
+                       {"quantity", 1},       {"order_id", client_id}};
+
+      std::string response = sendMessage(sock, orderMsg.dump());
+      json responseJson = json::parse(response);
+      bool success = responseJson["status"] == "success";
+
+      close(sock);
+      return success;
+    } catch (const std::exception &e) {
+      return false;
     }
-  }
+  };
 
-  json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
-                   {"side", "buy"},       {"price", 100.0},
-                   {"quantity", 1},       {"order_id", 0}};
-
+  // Launch all clients concurrently
   for (int i = 0; i < NUM_CLIENTS; ++i) {
-    orderMsg["order_id"] = i;
-    std::string response = sendMessage(sockets[i], orderMsg.dump());
-    json responseJson = json::parse(response);
-    EXPECT_EQ(responseJson["status"], "success");
+    client_futures.emplace_back(
+        std::async(std::launch::async, handle_client, i));
   }
 
-  for (int socket : sockets) {
-    close(socket);
+  // Wait for all clients and verify results
+  for (auto &future : client_futures) {
+    EXPECT_TRUE(future.get());
   }
 }
