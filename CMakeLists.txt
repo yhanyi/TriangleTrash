@@ -34,6 +34,7 @@ add_library(triangletrash_lib
     src/orderbook/orderbook.cpp
     src/orderbook/order.cpp
     src/network/server.cpp
+    src/network/thread_pool.cpp
     src/session/user.cpp
     src/session/session.cpp)
 
