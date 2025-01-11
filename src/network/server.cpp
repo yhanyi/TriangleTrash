@@ -1,4 +1,5 @@
 #include "../../include/network/server.hpp"
+#include "../../include/network/thread_pool.hpp"
 #include "../../include/orderbook/orderbook.hpp"
 #include "../../include/session/session.hpp"
 #include <atomic>
@@ -18,7 +19,8 @@ namespace network {
 
 class NetworkServer::Impl {
 public:
-  Impl(uint16_t port) : _port(port), _running(false) {
+  Impl(uint16_t port) : _port(port), _running(false), _serverSocket(-1) {
+    _thread_pool.init(std::thread::hardware_concurrency());
     // Create default session
     createSession("default");
   }
@@ -41,6 +43,7 @@ private:
   uint16_t _port;
   std::atomic<bool> _running;
   std::thread _acceptThread;
+  ThreadPool _thread_pool;
   std::vector<std::thread> _clientThreads;
   std::mutex _threads_mutex;
 
@@ -121,7 +124,8 @@ void NetworkServer::Impl::start() {
   // Start accept thread
   _acceptThread = std::thread(&NetworkServer::Impl::acceptLoop, this);
 
-  std::cout << "Server started on port " << _port << std::endl;
+  std::cout << "Server started on port " << _port << " with "
+            << _thread_pool.getSize() << " worker threads\n";
 }
 
 void NetworkServer::Impl::stop() {
@@ -138,15 +142,17 @@ void NetworkServer::Impl::stop() {
     _acceptThread.join();
   }
 
-  {
-    std::lock_guard<std::mutex> lock(_threads_mutex);
-    for (auto &thread : _clientThreads) {
-      if (thread.joinable()) {
-        thread.join();
-      }
-    }
-    _clientThreads.clear();
-  }
+  _thread_pool.terminate();
+
+  // {
+  //   std::lock_guard<std::mutex> lock(_threads_mutex);
+  //   for (auto &thread : _clientThreads) {
+  //     if (thread.joinable()) {
+  //       thread.join();
+  //     }
+  //   }
+  //   _clientThreads.clear();
+  // }
 }
 
 void NetworkServer::Impl::acceptLoop() {
@@ -168,13 +174,22 @@ void NetworkServer::Impl::acceptLoop() {
       continue;
     }
 
-    std::cout << "New client connected\n";
-
-    {
-      std::lock_guard<std::mutex> lock(_threads_mutex);
-      _clientThreads.emplace_back(&NetworkServer::Impl::handleClient, this,
-                                  clientSocket);
+    try {
+      // Submit client handling to thread pool
+      _thread_pool.async(
+          [this, clientSocket]() { handleClient(clientSocket); });
+    } catch (const std::exception &e) {
+      std::cerr << "Failed to submit client task: " << e.what() << std::endl;
+      close(clientSocket);
     }
+
+    // std::cout << "New client connected\n";
+
+    // {
+    //   std::lock_guard<std::mutex> lock(_threads_mutex);
+    //   _clientThreads.emplace_back(&NetworkServer::Impl::handleClient, this,
+    //                               clientSocket);
+    // }
   }
 }
 

@@ -6,7 +6,7 @@
 
 namespace network {
 
-template <typename T> class TaskQueue {
+template <typename T> class TaskQueue : protected std::queue<T> {
 public:
   using writelock = std::unique_lock<std::shared_mutex>;
   using readlock = std::shared_lock<std::shared_mutex>;
@@ -58,7 +58,6 @@ public:
 
 private:
   mutable std::shared_mutex _mutex;
-  std::queue<T> _queue;
 };
 
 } // namespace network
