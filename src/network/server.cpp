@@ -1,5 +1,7 @@
 #include "../../include/network/server.hpp"
 #include "../../include/network/thread_pool.hpp"
+#include "../../include/orderbook/order.hpp"
+#include "../../include/orderbook/order_allocator.hpp"
 #include "../../include/orderbook/orderbook.hpp"
 #include "../../include/session/session.hpp"
 #include <atomic>
@@ -291,10 +293,12 @@ void NetworkServer::Impl::handleOrderMessage(int clientSocket,
     throw std::runtime_error("Insufficient position");
   }
 
-  orderbook::Order order(order_id, side, price, quantity);
+  // orderbook::Order order(order_id, side, price, quantity);
+  orderbook::Order *order =
+      orderbook::OrderAllocator::create(order_id, side, price, quantity);
 
   // Try to match the order
-  auto match_result = orderbook->matchOrder(order);
+  auto match_result = orderbook->matchOrder(*order);
 
   if (match_result) {
     // Update user balances and positions
@@ -310,14 +314,16 @@ void NetworkServer::Impl::handleOrderMessage(int clientSocket,
                                {"message", "Order matched"},
                                {"order_id", order_id}};
     sendResponse(clientSocket, response.dump());
+    orderbook::OrderAllocator::destroy(order);
   } else {
     // Add to orderbook if no match
-    if (orderbook->addOrder(order)) {
+    if (orderbook->addOrder(*order)) {
       nlohmann::json response = {{"status", "success"},
                                  {"message", "Order added to book"},
                                  {"order_id", order_id}};
       sendResponse(clientSocket, response.dump());
     } else {
+      orderbook::OrderAllocator::destroy(order);
       throw std::runtime_error("Failed to add order");
     }
   }
