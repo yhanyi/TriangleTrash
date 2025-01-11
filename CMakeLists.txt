@@ -55,7 +55,8 @@ target_include_directories(triangletrash_server PRIVATE
 
 add_executable(triangletrash_tests
     tests/orderbook_test.cpp
-    tests/network_test.cpp)
+    tests/network_test.cpp
+    tests/concurrent_test.cpp)
 target_link_libraries(triangletrash_tests PRIVATE
     triangletrash_lib
     GTest::gtest_main
