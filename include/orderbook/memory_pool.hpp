@@ -31,11 +31,15 @@ template <typename T, size_t BlockSize = BLOCK_SIZE> class MemoryPool {
   };
 
 public:
-  MemoryPool() : head_block(nullptr), free_list(nullptr) { allocate_block(); }
+  MemoryPool()
+      : head_block(nullptr), free_list(nullptr), total_active_count(0) {
+    allocate_block();
+  }
 
   // Allocate and construct object
   template <typename... Args> T *allocate(Args &&...args) {
     void *ptr = allocate_raw();
+    total_active_count.fetch_add(1, std::memory_order_release);
     return new (ptr) T(std::forward<Args>(args)...);
   }
 
@@ -55,11 +59,7 @@ public:
       free_list = node;
     }
 
-    // Decrease block usage count
-    Block *block = find_owning_block(ptr);
-    if (block) {
-      block->used_count.fetch_sub(1, std::memory_order_release);
-    }
+    total_active_count.fetch_sub(1, std::memory_order_release);
   }
 
   ~MemoryPool() {
@@ -83,41 +83,10 @@ public:
   }
 
   size_t get_active_object_count() const {
-    size_t count = 0;
-    Block *current = head_block;
-    while (current != nullptr) {
-      count += current->used_count.load(std::memory_order_acquire);
-      current = current->next;
-    }
-    return count;
+    return total_active_count.load(std::memory_order_acquire);
   }
 
 private:
-  void *allocate_raw() {
-    std::lock_guard<std::mutex> lock(mutex);
-
-    // Try to reuse from free list first
-    if (free_list != nullptr) {
-      void *ptr = free_list;
-      free_list = free_list->next;
-      return ptr;
-    }
-
-    // If current block is full, allocate new block
-    if (current_offset + sizeof(T) > BlockSize ||
-        head_block->used_count.load(std::memory_order_acquire) * sizeof(T) >=
-            BlockSize) {
-      allocate_block();
-    }
-
-    // Allocate from current block
-    void *ptr = &head_block->data[current_offset];
-    current_offset += sizeof(T);
-    head_block->used_count.fetch_add(1, std::memory_order_release);
-
-    return ptr;
-  }
-
   void allocate_block() {
     if (get_allocated_block_count() >= MAX_BLOCKS) {
       throw std::runtime_error("Maximum block count exceeded");
@@ -129,21 +98,34 @@ private:
     current_offset = 0;
   }
 
-  Block *find_owning_block(void *ptr) {
-    Block *current = head_block;
-    while (current != nullptr) {
-      if (ptr >= &current->data[0] && ptr < &current->data[0] + BlockSize) {
-        return current;
-      }
-      current = current->next;
+  void *allocate_raw() {
+    std::lock_guard<std::mutex> lock(mutex);
+
+    // Try to reuse from free list first
+    if (free_list != nullptr) {
+      void *ptr = free_list;
+      free_list = free_list->next;
+      return ptr;
     }
-    return nullptr;
+
+    // If current block is full, allocate new block
+    if (current_offset + sizeof(T) > BlockSize) {
+      allocate_block();
+    }
+
+    // Allocate from current block
+    void *ptr = &head_block->data[current_offset];
+    current_offset += sizeof(T);
+    head_block->used_count.fetch_add(1, std::memory_order_release);
+
+    return ptr;
   }
 
   Block *head_block;
   FreeNode *free_list;
   size_t current_offset{0};
   std::mutex mutex;
+  std::atomic<size_t> total_active_count{0};
 };
 
 } // namespace orderbook
