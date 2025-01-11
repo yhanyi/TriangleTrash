@@ -102,59 +102,63 @@ void OrderBook::clear() {
 }
 
 std::optional<Order> OrderBook::matchOrder(const Order &order) {
-  std::unique_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
+  std::unique_lock write_lock(_pimpl->_book_mutex);
 
   if (order.getSide() == Side::BUY) {
     if (_pimpl->_asks.empty())
       return std::nullopt;
 
+    // Try to match with best ask
     auto ask_it = _pimpl->_asks.begin();
     if (ask_it->first > order.getPrice()) {
-      return std::nullopt;
+      return std::nullopt; // No matching price
     }
 
     auto &level = ask_it->second;
     if (!level.orders.empty()) {
-      auto &matching_order = level.orders.front();
+      // Make a copy of the matching order before potentially erasing it
+      Order matched_order = level.orders.front();
       uint32_t trade_quantity =
-          std::min(order.getQuantity(), matching_order.getQuantity());
+          std::min(order.getQuantity(), matched_order.getQuantity());
 
       level.total_quantity -= trade_quantity;
 
-      if (matching_order.getQuantity() == trade_quantity) {
+      if (matched_order.getQuantity() == trade_quantity) {
         level.orders.erase(level.orders.begin());
         if (level.orders.empty()) {
           _pimpl->_asks.erase(ask_it);
         }
       }
 
-      return matching_order;
+      return matched_order;
     }
   } else {
     if (_pimpl->_bids.empty())
       return std::nullopt;
 
+    // Try to match with best bid
     auto bid_it = _pimpl->_bids.begin();
     if (bid_it->first < order.getPrice()) {
-      return std::nullopt;
+      return std::nullopt; // No matching price
     }
 
     auto &level = bid_it->second;
     if (!level.orders.empty()) {
-      auto &matching_order = level.orders.front();
+      // Make a copy of the matching order before potentially erasing it
+      Order matched_order = level.orders.front();
       uint32_t trade_quantity =
-          std::min(order.getQuantity(), matching_order.getQuantity());
+          std::min(order.getQuantity(), matched_order.getQuantity());
 
       level.total_quantity -= trade_quantity;
 
-      if (matching_order.getQuantity() == trade_quantity) {
+      if (matched_order.getQuantity() == trade_quantity) {
         level.orders.erase(level.orders.begin());
         if (level.orders.empty()) {
           _pimpl->_bids.erase(bid_it);
         }
       }
 
-      return matching_order;
+      return matched_order;
     }
   }
 
