@@ -30,13 +30,27 @@ FetchContent_Declare(
 set(BENCHMARK_ENABLE_TESTING OFF)
 FetchContent_MakeAvailable(googletest benchmark json)
 
-add_library(triangletrash_lib
+set(LIB_SOURCES
     src/orderbook/orderbook.cpp
     src/orderbook/order.cpp
     src/network/server.cpp
     src/network/thread_pool.cpp
     src/session/user.cpp
-    src/session/session.cpp)
+    src/session/session.cpp
+)
+
+set(LIB_HEADERS
+    include/orderbook/order.hpp
+    include/orderbook/orderbook.hpp
+    include/orderbook/memory_pool.hpp
+    include/network/server.hpp
+    include/network/task_queue.hpp
+    include/network/thread_pool.hpp
+    include/session/user.hpp
+    include/session/session.hpp
+)
+
+add_library(triangletrash_lib ${LIB_SOURCES} ${LIB_HEADERS})
 
 target_include_directories(triangletrash_lib 
     PUBLIC 

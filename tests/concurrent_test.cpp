@@ -1,3 +1,4 @@
+#include "../include/orderbook/order_allocator.hpp"
 #include "../include/orderbook/orderbook.hpp"
 #include "../include/session/session.hpp"
 #include <future>
@@ -19,30 +20,41 @@ protected:
     session->addUser("trader2", 2);
   }
 
+  void TearDown() override { book.clear(); }
+
   OrderBook book;
   std::unique_ptr<Session> session;
   static uint64_t next_id;
 
-  Order createRandomOrder(Side side, double price_min, double price_max,
-                          uint32_t qty_min, uint32_t qty_max) {
+  Order *createRandomOrder(Side side, double price_min, double price_max,
+                           uint32_t qty_min, uint32_t qty_max) {
     static std::random_device rd;
     static std::mt19937 gen(rd());
     static std::uniform_real_distribution<> price_dist(price_min, price_max);
     static std::uniform_int_distribution<> qty_dist(qty_min, qty_max);
 
-    return Order(++next_id, side, price_dist(gen), qty_dist(gen));
+    return OrderAllocator::create(++next_id, side, price_dist(gen),
+                                  qty_dist(gen));
   }
 
-  std::vector<Order> generateRandomOrders(size_t count, Side side,
-                                          double price_min, double price_max,
-                                          uint32_t qty_min, uint32_t qty_max) {
-    std::vector<Order> orders;
+  std::vector<Order *> generateRandomOrders(size_t count, Side side,
+                                            double price_min, double price_max,
+                                            uint32_t qty_min,
+                                            uint32_t qty_max) {
+    std::vector<Order *> orders;
     orders.reserve(count);
     for (size_t i = 0; i < count; ++i) {
       orders.push_back(
           createRandomOrder(side, price_min, price_max, qty_min, qty_max));
     }
     return orders;
+  }
+
+  void destroyOrders(std::vector<Order *> &orders) {
+    for (auto *order : orders) {
+      OrderAllocator::destroy(order);
+    }
+    orders.clear();
   }
 };
 
@@ -66,8 +78,8 @@ TEST_F(ConcurrentOrderBookTest, ConcurrentOrderAddition) {
       size_t end_idx = ((i + 1) * buy_orders.size()) / num_threads;
 
       for (size_t j = start_idx; j < end_idx; ++j) {
-        book.addOrder(buy_orders[j]);
-        book.addOrder(sell_orders[j]);
+        book.addOrder(*buy_orders[j]);
+        book.addOrder(*sell_orders[j]);
       }
     });
   }
@@ -82,6 +94,10 @@ TEST_F(ConcurrentOrderBookTest, ConcurrentOrderAddition) {
   EXPECT_GT(last_bid, 0.0);
   EXPECT_GT(last_ask, 0.0);
   EXPECT_GE(last_ask, last_bid);
+
+  // Cleanup
+  destroyOrders(buy_orders);
+  destroyOrders(sell_orders);
 }
 
 TEST_F(ConcurrentOrderBookTest, BatchOrderProcessing) {
@@ -95,21 +111,25 @@ TEST_F(ConcurrentOrderBookTest, BatchOrderProcessing) {
   std::vector<std::future<bool>> results;
 
   // Submit buy orders
-  for (const auto &order : buy_orders) {
+  for (const auto *order : buy_orders) {
     results.push_back(std::async(
-        std::launch::async, [this, order]() { return book.addOrder(order); }));
+        std::launch::async, [this, order]() { return book.addOrder(*order); }));
   }
 
   // Submit sell orders
-  for (const auto &order : sell_orders) {
+  for (const auto *order : sell_orders) {
     results.push_back(std::async(
-        std::launch::async, [this, order]() { return book.addOrder(order); }));
+        std::launch::async, [this, order]() { return book.addOrder(*order); }));
   }
 
   // Wait for all orders to be processed
   for (auto &result : results) {
     EXPECT_TRUE(result.get());
   }
+
+  // Cleanup
+  destroyOrders(buy_orders);
+  destroyOrders(sell_orders);
 }
 
 TEST_F(ConcurrentOrderBookTest, StressTestMatching) {
@@ -126,17 +146,21 @@ TEST_F(ConcurrentOrderBookTest, StressTestMatching) {
         generateRandomOrders(num_orders, Side::SELL, 98.0, 102.0, 1, 20);
 
     // Submit matching requests concurrently
-    for (const auto &order : buy_orders) {
+    for (const auto *order : buy_orders) {
       match_results.push_back(std::async(std::launch::async, [this, order]() {
-        return book.matchOrder(order);
+        return book.matchOrder(*order);
       }));
     }
 
-    for (const auto &order : sell_orders) {
+    for (const auto *order : sell_orders) {
       match_results.push_back(std::async(std::launch::async, [this, order]() {
-        return book.matchOrder(order);
+        return book.matchOrder(*order);
       }));
     }
+
+    // Cleanup this iteration's orders
+    destroyOrders(buy_orders);
+    destroyOrders(sell_orders);
   }
 
   // Verify all matches completed
@@ -162,7 +186,7 @@ TEST_F(ConcurrentOrderBookTest, ConsistencyUnderLoad) {
     tasks.push_back(
         std::async(std::launch::async, [this, &matched_orders,
                                         &unmatched_orders, &buy_orders, i]() {
-          auto result = book.matchOrder(buy_orders[i]);
+          auto result = book.matchOrder(*buy_orders[i]);
           if (result)
             matched_orders++;
           else
@@ -172,7 +196,7 @@ TEST_F(ConcurrentOrderBookTest, ConsistencyUnderLoad) {
     tasks.push_back(
         std::async(std::launch::async, [this, &matched_orders,
                                         &unmatched_orders, &sell_orders, i]() {
-          auto result = book.matchOrder(sell_orders[i]);
+          auto result = book.matchOrder(*sell_orders[i]);
           if (result)
             matched_orders++;
           else

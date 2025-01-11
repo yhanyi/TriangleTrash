@@ -64,12 +64,21 @@ Send JSON-formatted orders to interact with the order book:
     - Batched order processing
     - Optimised network I/O
 
-- Custom Thread Pool
+- Thread Pool
 
     - Task scheduling with thread pool
     - Configurable number of worker threads based on hardware
     - Task queue with shared mutex synchronisation
     - Support for both async and immediate execution
+
+- Memory Pool
+
+    - Block-based allocation strategy (with 4KB blocks)
+    - Thread-safe with atomic operations and mutex protection
+    - Memory recycling through a free list
+    - O(1) allocation and deallocation
+    - Supports up to 1024 memory blocks
+    - Orders are managed through `OrderAllocator` which provides a type-safe interface
 
 ## Notes
 
