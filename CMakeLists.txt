@@ -34,6 +34,7 @@ add_library(triangletrash_lib
     src/orderbook/orderbook.cpp
     src/orderbook/order.cpp
     src/network/server.cpp
+    src/network/thread_pool.cpp
     src/session/user.cpp
     src/session/session.cpp)
 
@@ -54,7 +55,8 @@ target_include_directories(triangletrash_server PRIVATE
 
 add_executable(triangletrash_tests
     tests/orderbook_test.cpp
-    tests/network_test.cpp)
+    tests/network_test.cpp
+    tests/concurrent_test.cpp)
 target_link_libraries(triangletrash_tests PRIVATE
     triangletrash_lib
     GTest::gtest_main

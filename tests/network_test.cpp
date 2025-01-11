@@ -1,6 +1,7 @@
 #include "../include/network/server.hpp"
 #include "../include/session/session.hpp"
 #include <arpa/inet.h>
+#include <future>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
@@ -23,7 +24,7 @@ protected:
     }
   }
 
-  // Helper function to create a client socket
+  // Helper function to create a client socket with timeout
   int createClientSocket() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -37,7 +38,7 @@ protected:
 
     if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
       close(sock);
-      throw std::runtime_error("Failed to connect to server");
+      throw std::runtime_error("Failed to connect");
     }
 
     return sock;
@@ -192,28 +193,47 @@ TEST_F(NetworkTest, HandlesInsufficientFunds) {
 // Test multiple clients
 TEST_F(NetworkTest, HandlesMultipleClients) {
   server->start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   constexpr int NUM_CLIENTS = 5;
+  std::vector<std::future<bool>> client_futures;
   std::vector<int> sockets;
+  sockets.reserve(NUM_CLIENTS);
 
+  // Create clients concurrently
+  auto handle_client = [this](int client_id) -> bool {
+    try {
+      int sock = createClientSocket();
+
+      // Join session
+      if (!joinSession(sock, "trader" + std::to_string(client_id))) {
+        close(sock);
+        return false;
+      }
+
+      // Place order
+      json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
+                       {"side", "buy"},       {"price", 100.0},
+                       {"quantity", 1},       {"order_id", client_id}};
+
+      std::string response = sendMessage(sock, orderMsg.dump());
+      json responseJson = json::parse(response);
+      bool success = responseJson["status"] == "success";
+
+      close(sock);
+      return success;
+    } catch (const std::exception &e) {
+      return false;
+    }
+  };
+
+  // Launch all clients concurrently
   for (int i = 0; i < NUM_CLIENTS; ++i) {
-    sockets.push_back(createClientSocket());
-    EXPECT_TRUE(joinSession(sockets[i], "trader" + std::to_string(i)));
+    client_futures.emplace_back(
+        std::async(std::launch::async, handle_client, i));
   }
 
-  json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
-                   {"side", "buy"},       {"price", 100.0},
-                   {"quantity", 1},       {"order_id", 0}};
-
-  for (int i = 0; i < NUM_CLIENTS; ++i) {
-    orderMsg["order_id"] = i;
-    std::string response = sendMessage(sockets[i], orderMsg.dump());
-    json responseJson = json::parse(response);
-    EXPECT_EQ(responseJson["status"], "success");
-  }
-
-  for (int socket : sockets) {
-    close(socket);
+  // Wait for all clients and verify results
+  for (auto &future : client_futures) {
+    EXPECT_TRUE(future.get());
   }
 }

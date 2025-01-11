@@ -1,16 +1,20 @@
 #include "../../include/orderbook/orderbook.hpp"
+#include "../../include/network/thread_pool.hpp"
 
 #include <algorithm>
-#include <condition_variable>
 #include <map>
-#include <mutex>
+#include <memory>
 #include <shared_mutex>
-#include <vector>
 
 namespace orderbook {
 
 class OrderBook::Impl {
 public:
+  Impl() : _thread_pool(std::make_unique<network::ThreadPool>()) {
+    // Initialise with less threads to avoid oversubscription
+    _thread_pool->init(std::max(2u, std::thread::hardware_concurrency() / 2));
+  }
+
   struct PriceLevel {
     std::vector<Order> orders;
     double total_quantity{0.0};
@@ -18,166 +22,179 @@ public:
 
   std::map<double, PriceLevel, std::greater<>> _bids; // Higher prices first
   std::map<double, PriceLevel> _asks;                 // Lower prices first
-
-  mutable std::shared_mutex _book_mutex; // Protects both maps
-  std::condition_variable_any _match_cv;
-
-  bool tryMatchBuy(Order &buy_order);
-  bool tryMatchSell(Order &sell_order);
-  void cleanEmptyLevels();
+  mutable std::shared_mutex _book_mutex;
+  std::unique_ptr<network::ThreadPool> _thread_pool;
 };
 
 OrderBook::OrderBook() : _pimpl(new Impl) {}
 OrderBook::~OrderBook() { delete _pimpl; }
 
 bool OrderBook::addOrder(const Order &order) {
-  std::unique_lock write_lock(_pimpl->_book_mutex);
+  std::unique_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
 
   if (order.getSide() == Side::BUY) {
     // Try matching with existing sell orders
-    Order mutable_order = order;
-    if (_pimpl->tryMatchBuy(mutable_order)) {
-      return true;
+    if (!_pimpl->_asks.empty()) {
+      auto ask_it = _pimpl->_asks.begin();
+      if (ask_it->first <= order.getPrice()) {
+        auto &level = ask_it->second;
+        if (!level.orders.empty()) {
+          // Match found
+          auto &matching_order = level.orders.front();
+          uint32_t trade_quantity =
+              std::min(order.getQuantity(), matching_order.getQuantity());
+
+          level.total_quantity -= trade_quantity;
+
+          if (matching_order.getQuantity() == trade_quantity) {
+            level.orders.erase(level.orders.begin());
+            if (level.orders.empty()) {
+              _pimpl->_asks.erase(ask_it);
+            }
+          }
+          return true;
+        }
+      }
     }
 
-    // If no match, add to bids
+    // No match found, add to bids
     auto &level = _pimpl->_bids[order.getPrice()];
     level.orders.push_back(order);
     level.total_quantity += order.getQuantity();
   } else {
     // Try matching with existing buy orders
-    Order mutable_order = order;
-    if (_pimpl->tryMatchSell(mutable_order)) {
-      return true;
+    if (!_pimpl->_bids.empty()) {
+      auto bid_it = _pimpl->_bids.begin();
+      if (bid_it->first >= order.getPrice()) {
+        auto &level = bid_it->second;
+        if (!level.orders.empty()) {
+          // Match found
+          auto &matching_order = level.orders.front();
+          uint32_t trade_quantity =
+              std::min(order.getQuantity(), matching_order.getQuantity());
+
+          level.total_quantity -= trade_quantity;
+
+          if (matching_order.getQuantity() == trade_quantity) {
+            level.orders.erase(level.orders.begin());
+            if (level.orders.empty()) {
+              _pimpl->_bids.erase(bid_it);
+            }
+          }
+          return true;
+        }
+      }
     }
 
-    // If no match, add to asks
+    // No match found, add to asks
     auto &level = _pimpl->_asks[order.getPrice()];
     level.orders.push_back(order);
     level.total_quantity += order.getQuantity();
   }
 
-  _pimpl->_match_cv.notify_all();
   return true;
 }
 
 void OrderBook::clear() {
-  std::unique_lock write_lock(_pimpl->_book_mutex);
+  std::unique_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
   _pimpl->_bids.clear();
   _pimpl->_asks.clear();
 }
 
-bool OrderBook::Impl::tryMatchSell(Order &sell_order) {
-  if (_bids.empty())
-    return false;
+std::optional<Order> OrderBook::matchOrder(const Order &order) {
+  std::unique_lock write_lock(_pimpl->_book_mutex);
 
-  bool matched = false;
+  if (order.getSide() == Side::BUY) {
+    if (_pimpl->_asks.empty())
+      return std::nullopt;
 
-  for (auto it = _bids.begin(); it != _bids.end();) {
-    if (it->first < sell_order.getPrice()) {
-      break; // Bid price too low
+    // Try to match with best ask
+    auto ask_it = _pimpl->_asks.begin();
+    if (ask_it->first > order.getPrice()) {
+      return std::nullopt; // No matching price
     }
 
-    auto &level = it->second;
-
-    // Match orders at this price level
-    auto order_it = level.orders.begin();
-    while (order_it != level.orders.end()) {
+    auto &level = ask_it->second;
+    if (!level.orders.empty()) {
+      // Make a copy of the matching order before potentially erasing it
+      Order matched_order = level.orders.front();
       uint32_t trade_quantity =
-          std::min(sell_order.getQuantity(), order_it->getQuantity());
+          std::min(order.getQuantity(), matched_order.getQuantity());
 
       level.total_quantity -= trade_quantity;
-      matched = true;
 
-      if (order_it->getQuantity() == trade_quantity) {
-        order_it = level.orders.erase(order_it);
-      } else {
-        ++order_it;
+      if (matched_order.getQuantity() == trade_quantity) {
+        level.orders.erase(level.orders.begin());
+        if (level.orders.empty()) {
+          _pimpl->_asks.erase(ask_it);
+        }
       }
 
-      if (level.orders.empty()) {
-        it = _bids.erase(it);
-        break;
-      }
+      return matched_order;
+    }
+  } else {
+    if (_pimpl->_bids.empty())
+      return std::nullopt;
+
+    // Try to match with best bid
+    auto bid_it = _pimpl->_bids.begin();
+    if (bid_it->first < order.getPrice()) {
+      return std::nullopt; // No matching price
     }
 
-    if (it != _bids.end()) {
-      ++it;
+    auto &level = bid_it->second;
+    if (!level.orders.empty()) {
+      // Make a copy of the matching order before potentially erasing it
+      Order matched_order = level.orders.front();
+      uint32_t trade_quantity =
+          std::min(order.getQuantity(), matched_order.getQuantity());
+
+      level.total_quantity -= trade_quantity;
+
+      if (matched_order.getQuantity() == trade_quantity) {
+        level.orders.erase(level.orders.begin());
+        if (level.orders.empty()) {
+          _pimpl->_bids.erase(bid_it);
+        }
+      }
+
+      return matched_order;
     }
   }
 
-  return matched;
-}
-
-bool OrderBook::Impl::tryMatchBuy(Order &buy_order) {
-  if (_asks.empty())
-    return false;
-
-  bool matched = false;
-
-  for (auto it = _asks.begin(); it != _asks.end();) {
-    if (it->first > buy_order.getPrice()) {
-      break; // Ask price too high
-    }
-
-    auto &level = it->second;
-
-    // Match orders at this price level
-    auto order_it = level.orders.begin();
-    while (order_it != level.orders.end()) {
-      uint32_t trade_quantity =
-          std::min(buy_order.getQuantity(), order_it->getQuantity());
-
-      level.total_quantity -= trade_quantity;
-      matched = true;
-
-      if (order_it->getQuantity() == trade_quantity) {
-        order_it = level.orders.erase(order_it);
-      } else {
-        ++order_it;
-      }
-
-      if (level.orders.empty()) {
-        it = _asks.erase(it);
-        break;
-      }
-    }
-
-    if (it != _asks.end()) {
-      ++it;
-    }
-  }
-
-  return matched;
+  return std::nullopt;
 }
 
 bool OrderBook::cancelOrder(uint64_t orderId) {
-  std::unique_lock write_lock(_pimpl->_book_mutex);
+  std::unique_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
 
-  // Search in bids
+  auto remove_order = [](auto &orders, uint64_t id,
+                         double &total_quantity) -> bool {
+    auto it = std::find_if(orders.begin(), orders.end(),
+                           [id](const Order &o) { return o.getId() == id; });
+
+    if (it != orders.end()) {
+      total_quantity -= it->getQuantity();
+      orders.erase(it);
+      return true;
+    }
+    return false;
+  };
+
   for (auto &[price, level] : _pimpl->_bids) {
-    auto it = std::find_if(
-        level.orders.begin(), level.orders.end(),
-        [orderId](const Order &o) { return o.getId() == orderId; });
-
-    if (it != level.orders.end()) {
-      level.total_quantity -= it->getQuantity();
-      level.orders.erase(it);
-      _pimpl->cleanEmptyLevels();
+    if (remove_order(level.orders, orderId, level.total_quantity)) {
+      if (level.orders.empty()) {
+        _pimpl->_bids.erase(price);
+      }
       return true;
     }
   }
 
-  // Search in asks
   for (auto &[price, level] : _pimpl->_asks) {
-    auto it = std::find_if(
-        level.orders.begin(), level.orders.end(),
-        [orderId](const Order &o) { return o.getId() == orderId; });
-
-    if (it != level.orders.end()) {
-      level.total_quantity -= it->getQuantity();
-      level.orders.erase(it);
-      _pimpl->cleanEmptyLevels();
+    if (remove_order(level.orders, orderId, level.total_quantity)) {
+      if (level.orders.empty()) {
+        _pimpl->_asks.erase(price);
+      }
       return true;
     }
   }
@@ -185,57 +202,20 @@ bool OrderBook::cancelOrder(uint64_t orderId) {
   return false;
 }
 
-void OrderBook::Impl::cleanEmptyLevels() {
-  auto bid_it = _bids.begin();
-  while (bid_it != _bids.end()) {
-    if (bid_it->second.orders.empty()) {
-      bid_it = _bids.erase(bid_it);
-    } else {
-      ++bid_it;
-    }
-  }
-
-  auto ask_it = _asks.begin();
-  while (ask_it != _asks.end()) {
-    if (ask_it->second.orders.empty()) {
-      ask_it = _asks.erase(ask_it);
-    } else {
-      ++ask_it;
-    }
-  }
-}
-
 double OrderBook::getBestBid() const {
-  std::shared_lock read_lock(_pimpl->_book_mutex);
-  if (_pimpl->_bids.empty())
+  std::shared_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
+  if (_pimpl->_bids.empty()) {
     return 0.0;
+  }
   return _pimpl->_bids.begin()->first;
 }
 
 double OrderBook::getBestAsk() const {
-  std::shared_lock read_lock(_pimpl->_book_mutex);
-  if (_pimpl->_asks.empty())
+  std::shared_lock<std::shared_mutex> lock(_pimpl->_book_mutex);
+  if (_pimpl->_asks.empty()) {
     return 0.0;
+  }
   return _pimpl->_asks.begin()->first;
-}
-
-std::optional<Order> OrderBook::matchOrder(const Order &order) {
-  std::unique_lock write_lock(_pimpl->_book_mutex);
-
-  Order mutable_order = order;
-  bool matched = false;
-
-  if (order.getSide() == Side::BUY) {
-    matched = _pimpl->tryMatchBuy(mutable_order);
-  } else {
-    matched = _pimpl->tryMatchSell(mutable_order);
-  }
-
-  if (matched) {
-    return mutable_order;
-  }
-
-  return std::nullopt;
 }
 
 } // namespace orderbook
