@@ -1,6 +1,6 @@
+#include "../include/orderbook/order_allocator.hpp"
 #include "../include/orderbook/orderbook.hpp"
 #include "../include/session/session.hpp"
-#include "../include/session/user.hpp"
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
@@ -11,27 +11,26 @@ using namespace session;
 class OrderBookTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    // Create a fresh order book and session for each test
     book.clear();
     next_id = 0;
     session = std::make_unique<Session>("test_session");
-
-    // Add test users
     session->addUser("trader1", 1);
     session->addUser("trader2", 2);
   }
 
+  void TearDown() override { book.clear(); }
+
   OrderBook book;
   std::unique_ptr<Session> session;
-
-  // Helper to create orders with unique IDs
   static uint64_t next_id;
-  Order createBuyOrder(double price, uint32_t quantity) {
-    return Order(++next_id, Side::BUY, price, quantity);
+
+  // Helper methods now return Order pointers
+  Order *createBuyOrder(double price, uint32_t quantity) {
+    return OrderAllocator::create(++next_id, Side::BUY, price, quantity);
   }
 
-  Order createSellOrder(double price, uint32_t quantity) {
-    return Order(++next_id, Side::SELL, price, quantity);
+  Order *createSellOrder(double price, uint32_t quantity) {
+    return OrderAllocator::create(++next_id, Side::SELL, price, quantity);
   }
 
   // Helper to get test users
@@ -42,31 +41,49 @@ protected:
 uint64_t OrderBookTest::next_id = 0;
 
 TEST_F(OrderBookTest, CanAddBuyOrder) {
-  Order order = createBuyOrder(100.0, 10);
-  EXPECT_TRUE(book.addOrder(order));
+  Order *order = createBuyOrder(100.0, 10);
+  EXPECT_TRUE(book.addOrder(*order));
   EXPECT_EQ(book.getBestBid(), 100.0);
+  OrderAllocator::destroy(order);
 }
 
 TEST_F(OrderBookTest, CanAddSellOrder) {
-  Order order = createSellOrder(100.0, 10);
-  EXPECT_TRUE(book.addOrder(order));
+  Order *order = createSellOrder(100.0, 10);
+  EXPECT_TRUE(book.addOrder(*order));
   EXPECT_EQ(book.getBestAsk(), 100.0);
+  OrderAllocator::destroy(order);
 }
 
 TEST_F(OrderBookTest, MaintainsBestBidPrices) {
-  book.addOrder(createBuyOrder(100.0, 10));
-  book.addOrder(createBuyOrder(101.0, 10));
-  book.addOrder(createBuyOrder(99.0, 10));
+  Order *order1 = createBuyOrder(100.0, 10);
+  Order *order2 = createBuyOrder(101.0, 10);
+  Order *order3 = createBuyOrder(99.0, 10);
+
+  book.addOrder(*order1);
+  book.addOrder(*order2);
+  book.addOrder(*order3);
 
   EXPECT_EQ(book.getBestBid(), 101.0);
+
+  OrderAllocator::destroy(order1);
+  OrderAllocator::destroy(order2);
+  OrderAllocator::destroy(order3);
 }
 
 TEST_F(OrderBookTest, MaintainsBestAskPrices) {
-  book.addOrder(createSellOrder(100.0, 10));
-  book.addOrder(createSellOrder(101.0, 10));
-  book.addOrder(createSellOrder(99.0, 10));
+  Order *order1 = createSellOrder(100.0, 10);
+  Order *order2 = createSellOrder(101.0, 10);
+  Order *order3 = createSellOrder(99.0, 10);
+
+  book.addOrder(*order1);
+  book.addOrder(*order2);
+  book.addOrder(*order3);
 
   EXPECT_EQ(book.getBestAsk(), 99.0);
+
+  OrderAllocator::destroy(order1);
+  OrderAllocator::destroy(order2);
+  OrderAllocator::destroy(order3);
 }
 
 TEST_F(OrderBookTest, MatchesBuyWithExistingSell) {
@@ -74,12 +91,12 @@ TEST_F(OrderBookTest, MatchesBuyWithExistingSell) {
   auto trader2 = getTrader2();
 
   // Trader1 places sell order
-  Order sell = createSellOrder(100.0, 10);
-  book.addOrder(sell);
+  Order *sell = createSellOrder(100.0, 10);
+  book.addOrder(*sell);
 
   // Trader2 places matching buy order
-  Order buy = createBuyOrder(100.0, 10);
-  auto result = book.matchOrder(buy);
+  Order *buy = createBuyOrder(100.0, 10);
+  auto result = book.matchOrder(*buy);
 
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(book.getBestAsk(), 0.0);
@@ -93,15 +110,20 @@ TEST_F(OrderBookTest, MatchesBuyWithExistingSell) {
   EXPECT_EQ(trader2->getPosition("STOCK"), 10);
   EXPECT_EQ(trader2->getBalance(), 10000.0 - trade_value);
   EXPECT_EQ(trader1->getBalance(), 10000.0 + trade_value);
+
+  OrderAllocator::destroy(sell);
+  OrderAllocator::destroy(buy);
 }
 
 TEST_F(OrderBookTest, HandlesPartialFills) {
   auto trader1 = getTrader1();
   auto trader2 = getTrader2();
 
-  book.addOrder(createSellOrder(100.0, 10));
-  Order buy = createBuyOrder(100.0, 5);
-  auto result = book.matchOrder(buy);
+  Order *sell = createSellOrder(100.0, 10);
+  book.addOrder(*sell);
+
+  Order *buy = createBuyOrder(100.0, 5);
+  auto result = book.matchOrder(*buy);
 
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(book.getBestAsk(), 100.0);
@@ -113,6 +135,9 @@ TEST_F(OrderBookTest, HandlesPartialFills) {
   trader2->addPosition("STOCK", 5);
 
   EXPECT_EQ(trader2->getPosition("STOCK"), 5);
+
+  OrderAllocator::destroy(sell);
+  OrderAllocator::destroy(buy);
 }
 
 TEST_F(OrderBookTest, RespectsUserBalance) {
@@ -128,8 +153,9 @@ TEST_F(OrderBookTest, RespectsUserPosition) {
   EXPECT_EQ(trader->getPosition("STOCK"), 0);
 
   // Try to sell more than owned
-  Order sell = createSellOrder(100.0, 10);
+  Order *sell = createSellOrder(100.0, 10);
   EXPECT_LT(trader->getPosition("STOCK"), 10);
+  OrderAllocator::destroy(sell);
 }
 
 TEST_F(OrderBookTest, HandlesConcurrentOrders) {
@@ -140,9 +166,13 @@ TEST_F(OrderBookTest, HandlesConcurrentOrders) {
     threads.emplace_back([this, i]() {
       for (int j = 0; j < 100; ++j) {
         if (i % 2 == 0) {
-          book.addOrder(createBuyOrder(100.0, 1));
+          Order *order = createBuyOrder(100.0, 1);
+          book.addOrder(*order);
+          OrderAllocator::destroy(order);
         } else {
-          book.addOrder(createSellOrder(100.0, 1));
+          Order *order = createSellOrder(100.0, 1);
+          book.addOrder(*order);
+          OrderAllocator::destroy(order);
         }
       }
     });
