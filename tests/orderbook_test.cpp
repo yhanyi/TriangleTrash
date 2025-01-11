@@ -186,6 +186,76 @@ TEST_F(OrderBookTest, HandlesConcurrentOrders) {
   EXPECT_NO_THROW(book.getBestAsk());
 }
 
+TEST_F(OrderBookTest, MemoryPoolBasicCounting) {
+  std::cout << "Initial count: " << OrderAllocator::get_active_order_count()
+            << std::endl;
+
+  // Create a single order
+  Order *order = OrderAllocator::create(1, Side::BUY, 100.0, 10);
+  std::cout << "After create: " << OrderAllocator::get_active_order_count()
+            << std::endl;
+
+  // Destroy it
+  OrderAllocator::destroy(order);
+  std::cout << "After destroy: " << OrderAllocator::get_active_order_count()
+            << std::endl;
+
+  EXPECT_EQ(OrderAllocator::get_active_order_count(), 0);
+}
+
+TEST_F(OrderBookTest, MemoryPoolStressTest) {
+  constexpr size_t NUM_OPERATIONS = 10000;
+  constexpr size_t NUM_THREADS = 8;
+  std::vector<std::thread> threads;
+  std::atomic<size_t> total_allocations{0};
+  std::atomic<size_t> failed_allocations{0};
+
+  auto worker = [&](size_t thread_id) {
+    std::vector<Order *> orders;
+    orders.reserve(NUM_OPERATIONS / NUM_THREADS);
+
+    for (size_t i = 0; i < NUM_OPERATIONS / NUM_THREADS; i++) {
+      try {
+        auto *order = OrderAllocator::create(
+            thread_id * NUM_OPERATIONS + i, i % 2 == 0 ? Side::BUY : Side::SELL,
+            100.0 + (i % 100), 1 + (i % 50));
+        orders.push_back(order);
+        total_allocations.fetch_add(1, std::memory_order_relaxed);
+      } catch (const std::runtime_error &e) {
+        failed_allocations.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      // Randomly destroy some orders
+      if (i % 3 == 0 && !orders.empty()) {
+        size_t index = i % orders.size();
+        OrderAllocator::destroy(orders[index]);
+        orders[index] = orders.back();
+        orders.pop_back();
+      }
+    }
+
+    // Cleanup remaining orders
+    for (auto *order : orders) {
+      OrderAllocator::destroy(order);
+    }
+  };
+
+  // Launch threads
+  for (size_t i = 0; i < NUM_THREADS; i++) {
+    threads.emplace_back(worker, i);
+  }
+
+  // Wait for completion
+  for (auto &thread : threads) {
+    thread.join();
+  }
+
+  // Verify results
+  EXPECT_GT(total_allocations, 0);
+  EXPECT_EQ(OrderAllocator::get_active_order_count(), 0);
+  EXPECT_GT(OrderAllocator::get_allocated_block_count(), 0);
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
