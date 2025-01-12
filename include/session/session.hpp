@@ -18,6 +18,7 @@ public:
   // User management
   bool addUser(const std::string &username, int socket_fd);
   bool removeUser(const std::string &username);
+  bool removeUserBySocket(int socket_fd);
   std::shared_ptr<User> getUser(const std::string &username);
   std::shared_ptr<User> getUserBySocket(int socket_fd);
 

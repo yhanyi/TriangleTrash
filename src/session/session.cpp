@@ -40,6 +40,24 @@ bool Session::removeUser(const std::string &username) {
   return true;
 }
 
+bool Session::removeUserBySocket(int socket_fd) {
+  std::lock_guard<std::mutex> lock(_mutex);
+
+  auto it = _socket_to_username.find(socket_fd);
+  if (it == _socket_to_username.end()) {
+    return false;
+  }
+
+  // Get username and remove from socket map
+  std::string username = it->second;
+  _socket_to_username.erase(it);
+
+  // Remove from users map
+  _users.erase(username);
+
+  return true;
+}
+
 std::shared_ptr<User> Session::getUser(const std::string &username) {
   std::lock_guard<std::mutex> lock(_mutex);
 

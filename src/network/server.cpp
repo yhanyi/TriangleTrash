@@ -154,6 +154,12 @@ private:
         continue;
       }
 
+      if (!SocketOptimiser::optimiseSocket(clientSocket)) {
+        std::cerr << "Failed to optimise client socket" << std::endl;
+        close(clientSocket);
+        continue;
+      }
+
       try {
         _thread_pool.async(
             [this, clientSocket]() { handleClient(clientSocket); });
@@ -180,6 +186,12 @@ private:
       std::cerr << "Client handler error: " << e.what() << std::endl;
     }
 
+    {
+      std::lock_guard<std::mutex> lock(_sessions_mutex);
+      for (auto &[_, session] : _sessions) {
+        session->removeUserBySocket(clientSocket);
+      }
+    }
     close(clientSocket);
   }
 
