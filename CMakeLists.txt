@@ -35,6 +35,9 @@ set(LIB_SOURCES
     src/orderbook/order.cpp
     src/network/server.cpp
     src/network/thread_pool.cpp
+    src/network/protocol.cpp
+    src/network/zero_copy.cpp
+    src/network/market_data.cpp
     src/session/user.cpp
     src/session/session.cpp
 )
@@ -46,6 +49,9 @@ set(LIB_HEADERS
     include/network/server.hpp
     include/network/task_queue.hpp
     include/network/thread_pool.hpp
+    include/network/protocol.hpp
+    include/network/zero_copy.hpp
+    include/network/market_data.hpp
     include/session/user.hpp
     include/session/session.hpp
 )
@@ -70,7 +76,8 @@ target_include_directories(triangletrash_server PRIVATE
 add_executable(triangletrash_tests
     tests/orderbook_test.cpp
     tests/network_test.cpp
-    tests/concurrent_test.cpp)
+    tests/concurrent_test.cpp
+    tests/protocol_test.cpp)
 target_link_libraries(triangletrash_tests PRIVATE
     triangletrash_lib
     GTest::gtest_main
