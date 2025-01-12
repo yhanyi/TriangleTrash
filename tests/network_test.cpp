@@ -193,36 +193,48 @@ TEST_F(NetworkTest, HandlesInsufficientFunds) {
 
 // Test multiple clients
 TEST_F(NetworkTest, HandlesMultipleClients) {
-  // Start server without artificial delay
-  server->start();
-
   constexpr int NUM_CLIENTS = 5;
-  std::vector<std::future<bool>> client_futures;
+  constexpr auto TIMEOUT = std::chrono::seconds(5);
 
-  // Create clients concurrently with optimized resource handling
-  auto handle_client = [this](int client_id) -> bool {
+  server->start();
+  std::this_thread::sleep_for(
+      std::chrono::milliseconds(100)); // Wait for server startup
+
+  struct ClientResult {
+    bool success{false};
+    std::string error;
+  };
+
+  auto handle_client = [this](int client_id) -> ClientResult {
+    ClientResult result;
+    int sock = -1;
+
     try {
-      int sock = createClientSocket();
-      if (sock < 0)
-        return false;
+      // Connect with timeout
+      std::future<int> connect_future = std::async(
+          std::launch::async, [this]() { return createClientSocket(); });
 
-      // Use RAII for socket cleanup
-      struct SockGuard {
-        int &sock;
-        SockGuard(int &s) : sock(s) {}
-        ~SockGuard() {
-          if (sock >= 0)
-            close(sock);
-        }
-      } guard(sock);
+      if (connect_future.wait_for(std::chrono::seconds(2)) ==
+          std::future_status::timeout) {
+        throw std::runtime_error("Connection timeout");
+      }
 
-      // Set socket options for performance
-      int flag = 1;
-      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+      sock = connect_future.get();
+      if (sock < 0) {
+        throw std::runtime_error("Failed to create socket");
+      }
+
+      // Set socket timeout
+      struct timeval tv;
+      tv.tv_sec = 2;
+      tv.tv_usec = 0;
+      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
       // Join session
-      if (!joinSession(sock, "trader" + std::to_string(client_id))) {
-        return false;
+      std::string username = "trader" + std::to_string(client_id);
+      if (!joinSession(sock, username)) {
+        throw std::runtime_error("Failed to join session");
       }
 
       // Place order
@@ -233,23 +245,65 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
       std::string response = sendMessage(sock, orderMsg.dump());
       json responseJson = json::parse(response);
 
-      return responseJson["status"] == "success";
+      if (responseJson["status"] != "success") {
+        throw std::runtime_error("Order failed: " +
+                                 responseJson["message"].get<std::string>());
+      }
+
+      result.success = true;
+
     } catch (const std::exception &e) {
-      return false;
+      result.success = false;
+      result.error = e.what();
     }
+
+    if (sock >= 0) {
+      close(sock);
+    }
+
+    return result;
   };
 
-  // Launch clients with immediate execution
+  // Launch clients with timeout
+  std::vector<std::future<ClientResult>> futures;
+  auto start_time = std::chrono::steady_clock::now();
+
   for (int i = 0; i < NUM_CLIENTS; ++i) {
-    client_futures.emplace_back(
-        std::async(std::launch::async, handle_client, i));
+    futures.push_back(std::async(std::launch::async, handle_client, i));
   }
 
-  // Wait for all clients
-  bool all_succeeded = true;
-  for (auto &future : client_futures) {
-    all_succeeded &= future.get();
+  // Wait for all clients with timeout
+  std::vector<ClientResult> results;
+  bool timeout_occurred = false;
+
+  for (auto &future : futures) {
+    if (future.wait_for(TIMEOUT) == std::future_status::timeout) {
+      timeout_occurred = true;
+      break;
+    }
+    results.push_back(future.get());
   }
 
-  EXPECT_TRUE(all_succeeded);
+  auto duration = std::chrono::steady_clock::now() - start_time;
+
+  // Print diagnostic information
+  std::cout
+      << "Test completed in "
+      << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()
+      << "ms\n";
+
+  for (size_t i = 0; i < results.size(); ++i) {
+    if (!results[i].success) {
+      std::cout << "Client " << i << " failed: " << results[i].error << "\n";
+    }
+  }
+
+  EXPECT_FALSE(timeout_occurred)
+      << "Test timed out after " << TIMEOUT.count() << " seconds";
+
+  if (!timeout_occurred) {
+    for (const auto &result : results) {
+      EXPECT_TRUE(result.success) << "Client failed: " << result.error;
+    }
+  }
 }
