@@ -80,6 +80,11 @@ Send JSON-formatted orders to interact with the order book:
     - Supports up to 1024 memory blocks
     - Orders are managed through `OrderAllocator` which provides a type-safe interface
 
+- Network Optimisations
+
+    - Zero-copy networking for reduced latency
+    - Optimised socket handling
+
 ## Notes
 
 - C++20, GoogleTests, GoogleBenchmark
