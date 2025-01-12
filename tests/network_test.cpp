@@ -4,6 +4,7 @@
 #include <future>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <nlohmann/json.hpp>
 #include <sys/socket.h>
 #include <thread>
@@ -192,21 +193,35 @@ TEST_F(NetworkTest, HandlesInsufficientFunds) {
 
 // Test multiple clients
 TEST_F(NetworkTest, HandlesMultipleClients) {
+  // Start server without artificial delay
   server->start();
 
   constexpr int NUM_CLIENTS = 5;
   std::vector<std::future<bool>> client_futures;
-  std::vector<int> sockets;
-  sockets.reserve(NUM_CLIENTS);
 
-  // Create clients concurrently
+  // Create clients concurrently with optimized resource handling
   auto handle_client = [this](int client_id) -> bool {
     try {
       int sock = createClientSocket();
+      if (sock < 0)
+        return false;
+
+      // Use RAII for socket cleanup
+      struct SockGuard {
+        int &sock;
+        SockGuard(int &s) : sock(s) {}
+        ~SockGuard() {
+          if (sock >= 0)
+            close(sock);
+        }
+      } guard(sock);
+
+      // Set socket options for performance
+      int flag = 1;
+      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
       // Join session
       if (!joinSession(sock, "trader" + std::to_string(client_id))) {
-        close(sock);
         return false;
       }
 
@@ -217,23 +232,24 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
 
       std::string response = sendMessage(sock, orderMsg.dump());
       json responseJson = json::parse(response);
-      bool success = responseJson["status"] == "success";
 
-      close(sock);
-      return success;
+      return responseJson["status"] == "success";
     } catch (const std::exception &e) {
       return false;
     }
   };
 
-  // Launch all clients concurrently
+  // Launch clients with immediate execution
   for (int i = 0; i < NUM_CLIENTS; ++i) {
     client_futures.emplace_back(
         std::async(std::launch::async, handle_client, i));
   }
 
-  // Wait for all clients and verify results
+  // Wait for all clients
+  bool all_succeeded = true;
   for (auto &future : client_futures) {
-    EXPECT_TRUE(future.get());
+    all_succeeded &= future.get();
   }
+
+  EXPECT_TRUE(all_succeeded);
 }
