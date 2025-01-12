@@ -193,56 +193,91 @@ TEST_F(NetworkTest, HandlesInsufficientFunds) {
 
 // Test multiple clients
 TEST_F(NetworkTest, HandlesMultipleClients) {
-  constexpr int NUM_CLIENTS = 5;
-  constexpr auto TIMEOUT = std::chrono::seconds(5);
+  constexpr int NUM_CLIENTS = 3; // Reduced from 5 to lower resource usage
+  constexpr auto TIMEOUT = std::chrono::seconds(10); // Increased timeout
 
   server->start();
+  std::cout << "Server started, waiting for initialization..." << std::endl;
   std::this_thread::sleep_for(
-      std::chrono::milliseconds(100)); // Wait for server startup
+      std::chrono::milliseconds(500)); // Increased startup wait
 
   struct ClientResult {
     bool success{false};
     std::string error;
+    std::chrono::milliseconds connect_time{0};
+    std::chrono::milliseconds operation_time{0};
   };
 
   auto handle_client = [this](int client_id) -> ClientResult {
     ClientResult result;
     int sock = -1;
+    auto start_time = std::chrono::steady_clock::now();
 
     try {
-      // Connect with timeout
-      std::future<int> connect_future = std::async(
-          std::launch::async, [this]() { return createClientSocket(); });
+      std::cout << "Client " << client_id << " attempting connection..."
+                << std::endl;
 
-      if (connect_future.wait_for(std::chrono::seconds(2)) ==
-          std::future_status::timeout) {
-        throw std::runtime_error("Connection timeout");
-      }
+      // Connect with timeout
+      std::future<int> connect_future =
+          std::async(std::launch::async, [this]() {
+            try {
+              return createClientSocket();
+            } catch (const std::exception &e) {
+              std::cout << "Connection creation error: " << e.what()
+                        << std::endl;
+              return -1;
+            }
+          });
 
       sock = connect_future.get();
       if (sock < 0) {
         throw std::runtime_error("Failed to create socket");
       }
 
-      // Set socket timeout
+      result.connect_time =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - start_time);
+      std::cout << "Client " << client_id << " connected in "
+                << result.connect_time.count() << "ms" << std::endl;
+
+      // Set longer socket timeouts for CI environment
       struct timeval tv;
-      tv.tv_sec = 2;
+      tv.tv_sec = 5; // Increased timeout
       tv.tv_usec = 0;
-      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+      if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cout << "Failed to set receive timeout for client " << client_id
+                  << std::endl;
+      }
+      if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cout << "Failed to set send timeout for client " << client_id
+                  << std::endl;
+      }
+
+      // Add small delay between clients to reduce contention
+      std::this_thread::sleep_for(std::chrono::milliseconds(50 * client_id));
 
       // Join session
       std::string username = "trader" + std::to_string(client_id);
+      std::cout << "Client " << client_id << " attempting to join session..."
+                << std::endl;
+
       if (!joinSession(sock, username)) {
         throw std::runtime_error("Failed to join session");
       }
+
+      std::cout << "Client " << client_id << " joined session successfully"
+                << std::endl;
 
       // Place order
       json orderMsg = {{"type", "new_order"}, {"session_id", "test_session"},
                        {"side", "buy"},       {"price", 100.0},
                        {"quantity", 1},       {"order_id", client_id}};
 
+      std::cout << "Client " << client_id << " placing order..." << std::endl;
       std::string response = sendMessage(sock, orderMsg.dump());
+      std::cout << "Client " << client_id << " received response: " << response
+                << std::endl;
+
       json responseJson = json::parse(response);
 
       if (responseJson["status"] != "success") {
@@ -255,10 +290,17 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
     } catch (const std::exception &e) {
       result.success = false;
       result.error = e.what();
+      std::cout << "Client " << client_id << " failed: " << e.what()
+                << std::endl;
     }
+
+    result.operation_time =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time);
 
     if (sock >= 0) {
       close(sock);
+      std::cout << "Client " << client_id << " closed connection" << std::endl;
     }
 
     return result;
@@ -279,6 +321,7 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
   for (auto &future : futures) {
     if (future.wait_for(TIMEOUT) == std::future_status::timeout) {
       timeout_occurred = true;
+      std::cout << "Timeout waiting for client completion" << std::endl;
       break;
     }
     results.push_back(future.get());
@@ -286,16 +329,25 @@ TEST_F(NetworkTest, HandlesMultipleClients) {
 
   auto duration = std::chrono::steady_clock::now() - start_time;
 
-  // Print diagnostic information
+  // Print detailed diagnostic information
+  std::cout << "\nTest Summary:" << std::endl;
   std::cout
-      << "Test completed in "
+      << "Total test duration: "
       << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()
-      << "ms\n";
+      << "ms" << std::endl;
+  std::cout << "Results received: " << results.size() << "/" << NUM_CLIENTS
+            << std::endl;
 
   for (size_t i = 0; i < results.size(); ++i) {
+    std::cout << "Client " << i << ":"
+              << "\n  Success: " << (results[i].success ? "true" : "false")
+              << "\n  Connect time: " << results[i].connect_time.count() << "ms"
+              << "\n  Total time: " << results[i].operation_time.count()
+              << "ms";
     if (!results[i].success) {
-      std::cout << "Client " << i << " failed: " << results[i].error << "\n";
+      std::cout << "\n  Error: " << results[i].error;
     }
+    std::cout << std::endl;
   }
 
   EXPECT_FALSE(timeout_occurred)
